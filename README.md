@@ -58,7 +58,7 @@ dsh plugin --profile desktop add "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-pr
 
 3) 重启 DSH。
 
-## 创建空间
+## 两层开关（都能在界面里启停）| 层 | 位置 | 控制什么 ||---|---|---|| **DSH 插件** | 插件管理（bundles 里能看到 `dsh-exp-lib-provider`） | 工具面：`exp_recall` / `exp_record` 是否可用 || **记忆 Provider** | 记忆引擎 → Provider 列表里的「经验库」 | 存储/空间：这个 Provider 是否参与记忆空间 | 装好后两处都要开：插件管理里启用插件；记忆引擎里把「经验库」的开关打开。Provider 卡片显示「未启用」是正常的，点右侧开关即可。\n\n## 创建空间
 
 重启后：**记忆插件 → 记忆空间 → 新建**，选 Provider「经验库」，名称填 `经验库`，描述用默认或自己写：
 

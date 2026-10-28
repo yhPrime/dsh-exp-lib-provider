@@ -2,23 +2,31 @@
   "name": "dsh-exp-lib-provider",
   "version": "0.1.0",
   "private": true,
-  "description": "经验库的存储与检索 Provider：作为 dsh-mnemon 记忆空间的后端，配合同包的 exp_recall / exp_record 工具。",
+  "description": "经验库的记忆空间 Provider（后端），同时作为 DSH 插件注册 exp_recall / exp_record 工具。",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./plugin": "./plugin.js",
     "./provider": "./provider.js",
     "./store": "./store.js",
     "./tools": "./tools.js"
   },
   "files": [
     "index.js",
+    "plugin.js",
     "provider.js",
     "store.js",
     "tools.js",
     "kernel.js",
+    "cordis.patch.yml",
     "README.md"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "peerDependencies": {
     "dsh-mnemon-source-memory-spaces": "^0.5.0",
     "@deepseek-ai/dsh-tools": "*"

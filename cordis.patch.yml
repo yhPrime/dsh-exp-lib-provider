@@ -1,0 +1,5 @@
+- insert:
+    - id: exp-lib-provider
+      name: dsh-exp-lib-provider/plugin
+      config:
+        dataDir: C:\Users\yh\WorkDeepSeek\插件\经验库\provider-data
