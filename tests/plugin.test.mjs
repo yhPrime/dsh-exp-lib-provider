@@ -1,5 +1,5 @@
 /**
- * DSH 插件入口测试：apply 只注册工具，且不依赖宿主工具 SDK（可退化）。
+ * DSH 插件入口测试：apply 注册工具（直接 ctx.tools 或经 inject 回退），不依赖宿主 SDK。
  * Run: node tests/plugin.test.mjs
  */
 import assert from 'node:assert/strict'
@@ -12,9 +12,9 @@ const mod = await import('../plugin.js')
 let passed = 0
 let failed = 0
 
-function check(name, fn) {
+async function check(name, fn) {
   try {
-    fn()
+    await fn()
     passed += 1
     console.log(`  ok   ${name}`)
   } catch (error) {
@@ -24,12 +24,24 @@ function check(name, fn) {
   }
 }
 
-check('插件入口：name / apply 存在', () => {
+function ctxWithTools(registered) {
+  return { tools: { register: (tool) => registered.push(tool) } }
+}
+
+await check('插件入口：name / inject / apply 存在', () => {
   assert.equal(mod.name, 'dsh-exp-lib-provider')
+  assert.deepEqual(mod.inject, ['tools'])
   assert.equal(typeof mod.apply, 'function')
 })
 
-check('apply：注册 exp_record 与 exp_recall 两个工具', () => {
+await check('apply：ctx.tools 直接注册 exp_record 与 exp_recall', async () => {
+  const registered = []
+  await mod.apply(ctxWithTools(registered), { dataDir: dir })
+  assert.deepEqual(registered.map((tool) => tool.name).sort(), ['exp_recall', 'exp_record'])
+  assert.ok(registered.every((tool) => typeof tool.execute === 'function'))
+})
+
+await check('apply：没有 ctx.tools 时经 inject 回退注册', async () => {
   const registered = []
   const ctx = {
     inject(deps, cb) {
@@ -37,15 +49,13 @@ check('apply：注册 exp_record 与 exp_recall 两个工具', () => {
       cb({ tools: { register: (tool) => registered.push(tool) } })
     },
   }
-  mod.apply(ctx, { dataDir: dir })
+  await mod.apply(ctx, { dataDir: dir })
   assert.deepEqual(registered.map((tool) => tool.name).sort(), ['exp_recall', 'exp_record'])
-  assert.ok(registered.every((tool) => typeof tool.execute === 'function'))
 })
 
-check('apply：工具写读同一 dataDir', () => {
+await check('apply：工具写读同一 dataDir', async () => {
   const registered = []
-  const ctx = { inject: (_deps, cb) => cb({ tools: { register: (tool) => registered.push(tool) } }) }
-  mod.apply(ctx, { dataDir: dir })
+  await mod.apply(ctxWithTools(registered), { dataDir: dir })
   const record = registered.find((tool) => tool.name === 'exp_record')
   const recall = registered.find((tool) => tool.name === 'exp_recall')
   record.execute({ intent: '做一份任务卡', action: 'task-card-builder', outcome: 'success', type: '文档 / 教案' })

@@ -31,15 +31,11 @@ export function buildTools(defineTool, config = {}) {
     name: 'exp_record',
     description: '记录一条工作经验（做法 + 结果）。同一做法会就地更新 hits，近似替换会写新条并标记旧条被取代。',
     parameters: {
-      type: 'object',
-      properties: {
-        intent: { type: 'string', description: '要做的任务/意图。' },
-        action: { type: 'string', description: '采取的做法或方案名。' },
-        outcome: { type: 'string', enum: ['accepted', 'success', 'partial', 'unknown', 'failed', 'corrected', 'aborted'], description: '结果；影响回报 G。' },
-        type: { type: 'string', description: '经验类型名称或 id（可选，认不得归「未分类」）。' },
-        note: { type: 'string', description: '关键步骤、为什么有效、踩了什么坑。' },
-      },
-      required: ['intent', 'action'],
+      intent: { type: 'string', required: true, description: '要做的任务/意图。' },
+      action: { type: 'string', required: true, description: '采取的做法或方案名。' },
+      outcome: { type: 'string', enum: ['accepted', 'success', 'partial', 'unknown', 'failed', 'corrected', 'aborted'], description: '结果；影响回报 G。' },
+      type: { type: 'string', description: '经验类型名称或 id（可选，认不得归「未分类」）。' },
+      note: { type: 'string', description: '关键步骤、为什么有效、踩了什么坑。' },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     execute(args = {}) {
@@ -70,12 +66,8 @@ export function buildTools(defineTool, config = {}) {
     name: 'exp_recall',
     description: '按任务意图召回历史经验，按 JitRL 优势排序（Â = Q̂ − V̂，乘置信度）。返回做法与证据。',
     parameters: {
-      type: 'object',
-      properties: {
-        intent: { type: 'string', description: '当前任务意图。' },
-        limit: { type: 'number', description: '返回几条候选做法，默认 8。' },
-      },
-      required: ['intent'],
+      intent: { type: 'string', required: true, description: '当前任务意图。' },
+      limit: { type: 'number', description: '返回几条候选做法，默认 8。' },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     execute(args = {}) {

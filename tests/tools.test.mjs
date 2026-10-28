@@ -33,8 +33,9 @@ function check(name, fn) {
 
 check('两个工具都注册，参数 schema 完整', () => {
   assert.ok(record && recall)
-  assert.deepEqual(record.parameters.required, ['intent', 'action'])
-  assert.deepEqual(recall.parameters.required, ['intent'])
+  assert.equal(record.parameters.intent.required, true)
+  assert.equal(record.parameters.action.required, true)
+  assert.equal(recall.parameters.intent.required, true)
   assert.equal(typeof record.execute, 'function')
   assert.equal(typeof recall.execute, 'function')
 })
