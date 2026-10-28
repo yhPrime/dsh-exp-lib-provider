@@ -86,6 +86,21 @@ check('exp_recall 与 Provider 读同一文件、同一语义', () => {
   assert.equal(providerResults[0].id, toolOut.candidates[0].evidence[0].id)
 })
 
+check('工具跟随配置：Provider 状态里的数据目录优先于插件配置', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-provider-state-'))
+  const stateDataDir = path.join(stateDir, 'data')
+  const stateFile = path.join(stateDir, 'memory-providers.json')
+  fs.writeFileSync(stateFile, JSON.stringify({ services: { 'exp-lib': { dataDir: stateDataDir } } }), 'utf8')
+  const followTools = buildTools(defineTool, { dataDir: dir, providerStateFile: stateFile })
+  const followRecord = followTools.find((tool) => tool.name === 'exp_record')
+  const followRecall = followTools.find((tool) => tool.name === 'exp_recall')
+  followRecord.execute({ intent: '跟随配置测试', action: '读状态文件', outcome: 'success' })
+  assert.ok(fs.existsSync(path.join(stateDataDir, 'exp-lib.json')), '应写到状态文件指定的目录')
+  const out = followRecall.execute({ intent: '跟随配置测试', limit: 3 })
+  assert.ok(out.candidates.length >= 1)
+  fs.rmSync(stateDir, { recursive: true, force: true })
+})
+
 try {
   fs.rmSync(dir, { recursive: true, force: true })
 } catch {}

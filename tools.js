@@ -8,7 +8,7 @@
 import {
   rankExperiences,
   readStore,
-  resolveDataDir,
+  resolveToolDataDir,
   scoreOf,
   upsertExperience,
   writeStore,
@@ -25,7 +25,8 @@ function renderJson(_args, value) {
  * @param {{dataDir?: string, mergeThreshold?: number, replaceThreshold?: number}} config
  */
 export function buildTools(defineTool, config = {}) {
-  const dataDirOf = () => resolveDataDir(config)
+  // 跟随记忆插件里的 Provider 服务设置（用户改数据目录后工具自动跟随），读不到才退回插件配置。
+  const dataDirOf = () => resolveToolDataDir(config)
 
   const record = defineTool({
     name: 'exp_record',

@@ -42,6 +42,48 @@ export function resolveDataDir(config = {}) {
   return path.join(process.cwd(), '.exp', 'exp-lib-provider')
 }
 
+/**
+ * 从记忆插件的 Provider 服务设置里读 exp-lib 的数据目录。
+ *
+ * 这是「工具跟随配置」的关键：用户在记忆引擎里改了「经验库」的数据目录，
+ * 工具不需要重新打包/改 profile，直接读同一份服务设置。
+ * 候选位置：显式 providerStateFile → mnemonDataDir → DSH_MNEMON_DATA_DIR → 工作区/.mnemon → 家目录/.mnemon。
+ */
+export function dataDirFromProviderState(config = {}) {
+  const files = []
+  if (typeof config.providerStateFile === 'string' && config.providerStateFile.trim() !== '') {
+    files.push(path.resolve(config.providerStateFile))
+  }
+  const roots = [
+    config.mnemonDataDir,
+    process.env.DSH_MNEMON_DATA_DIR,
+    path.join(process.cwd(), '.mnemon'),
+    path.join(os.homedir(), '.mnemon'),
+  ]
+  for (const root of roots) {
+    if (typeof root === 'string' && root.trim() !== '') {
+      files.push(path.join(root.trim(), 'state', 'memory-providers.json'))
+    }
+  }
+  for (const file of files) {
+    try {
+      const state = JSON.parse(fs.readFileSync(file, 'utf8'))
+      const dir = state && state.services && state.services['exp-lib'] && state.services['exp-lib'].dataDir
+      if (typeof dir === 'string' && dir.trim() !== '') {
+        return path.resolve(dir.trim().replace(/^~(?=$|[\\/])/, os.homedir()))
+      }
+    } catch {
+      // 该候选不存在或不可读，继续下一个。
+    }
+  }
+  return ''
+}
+
+/** 工具用：优先跟随记忆插件里的 Provider 设置，读不到再退回插件自己的配置。 */
+export function resolveToolDataDir(config = {}) {
+  return dataDirFromProviderState(config) || resolveDataDir(config)
+}
+
 export function storeFile(dataDir) {
   return path.join(dataDir, FILE_NAME)
 }

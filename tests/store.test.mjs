@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
+  dataDirFromProviderState,
   forgetExperience,
   graphSnapshot,
   listInsights,
@@ -123,6 +124,13 @@ check('持久化：writeStore 后 readStore 内容一致', () => {
   const again = readStore(dir)
   assert.equal(again.experiences.length, store.experiences.length)
   assert.ok(again.types.length >= 1)
+})
+
+check('跟随配置：从记忆插件状态里读 Provider 数据目录', () => {
+  const stateFile = path.join(dir, 'memory-providers.json')
+  fs.writeFileSync(stateFile, JSON.stringify({ services: { 'exp-lib': { dataDir: path.join(dir, 'from-state') } } }), 'utf8')
+  const resolved = dataDirFromProviderState({ providerStateFile: stateFile, mnemonDataDir: path.join(dir, 'none') })
+  assert.equal(resolved, path.join(dir, 'from-state'))
 })
 
 try {
