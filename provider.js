@@ -76,6 +76,9 @@ export function buildProvider(sdk, config = {}) {
       if (purgeTombstones(initial, merged.tombstoneDays, Date.now()) > 0) writeStore(dataDir, initial)
 
       return {
+        // 契约要求：工厂返回的 adapter.id 必须等于 manifest.typeId（否则报 "factory returned undefined"）。
+        id: PROVIDER_ID,
+
         discover() {
           const store = readStore(dataDir)
           if (store.experiences.length === 0) return []

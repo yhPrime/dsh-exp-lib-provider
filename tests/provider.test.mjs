@@ -33,6 +33,8 @@ function check(name, fn) {
 }
 
 check('manifest：provider 契约字段与能力位', () => {
+  // 契约要求 adapter.id === manifest.typeId（memory-spaces 的 assertRuntime 会校验）
+  assert.equal(adapter.id, 'exp-lib')
   const manifest = definition.manifest
   assert.equal(manifest.apiVersion, 'dsh-mnemon.memory-space-provider/v1')
   assert.equal(manifest.kind, 'provider')
