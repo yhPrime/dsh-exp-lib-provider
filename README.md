@@ -66,7 +66,7 @@ dsh plugin --profile desktop add "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-pr
 
 启用后，模型的数据会写在 `<dataDir>/exp-lib.json`。
 
-## 语义
+## 每轮提示层\n\n插件启用时会向系统提示追加一段有界文本（`order: 160`）：类型目录 + 用法提示（`exp_recall` / `exp_record`）。内容每轮动态读当前数据文件，条数会跟着变；`config.hint: false` 可关掉。它不经过记忆组合（不需要 scoped 策略），**禁用插件即消失**。\n\n## 语义
 
 - **写入唯一入口**：`exp_record(intent, action, outcome?, type?, note?)`
   - 重复（同做法、相似度 ≥ 0.9）→ 就地更新 `hits / outcome / note`；
@@ -96,7 +96,7 @@ node tests/provider.test.mjs   # 10 项：manifest / status / discover / 拒收 
 node tests/tools.test.mjs      # 6 项：两工具与 Provider 同一文件同一语义
 ```
 
-内核（JitRL 数学）与 `dsh-exp-lib-source/kernel.js` 同源，Provider 不依赖其他插件包。
+内核（JitRL 数学）随包自带，Provider 不依赖其他插件包。
 
 ## 边界
 

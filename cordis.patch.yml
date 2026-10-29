@@ -6,3 +6,4 @@
         dataDir: C:\Users\yh\WorkDeepSeek\插件\经验库\provider-data
         # 记忆插件的存储根：工具从这里读 Provider 服务设置，用户改数据目录后自动跟随。
         mnemonDataDir: C:\Users\yh\WorkDeepSeek\.mnemon
+        hint: true

@@ -354,3 +354,27 @@ export function statsOf(store, dataDir) {
 export function describeSpace() {
   return `${SPACE_NAME}：${SPACE_DESCRIPTION}`
 }
+
+
+/** 每轮提示段的文本：类型目录 + 用法提示（有界，读当前配置的数据文件）。 */
+export function renderHint(config = {}, maxCharacters = 900) {
+  let store
+  try {
+    store = readStore(resolveToolDataDir(config))
+  } catch {
+    store = { types: DEFAULT_TYPES, experiences: [] }
+  }
+  const active = store.experiences.filter((item) => !item.deleted_at && !item.superseded_by).length
+  const lines = [
+    "【经验库】接同类任务前用 exp_recall(intent) 查历史做法（按 JitRL 优势排序）；做完一个做法用 exp_record 记结果（同一做法会自动合并）。",
+    `当前 ${active} 条经验。类型（名称用于识别，描述说明写什么/召回什么）：`,
+  ]
+  for (const type of store.types) {
+    const description = String(type.description || "").replace(/\s+/g, " ").trim()
+    lines.push(`- ${type.name}${description === "" ? "" : `：${description.length > 60 ? `${description.slice(0, 59)}…` : description}`}`)
+  }
+  let text = lines.join("\n")
+  if (text.length > maxCharacters) text = `${text.slice(0, Math.max(0, maxCharacters - 1))}…`
+  return text
+}
+
