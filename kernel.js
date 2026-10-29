@@ -346,13 +346,17 @@ export function estimateActionValue(action, neighbors, alpha = DEFAULT_ALPHA) {
  *
  * @param {object[]} experiences - Stored experiences.
  * @param {string} intent - Current task intent.
- * @param {{candidateActions?: string[], k?: number, alpha?: number, actionHint?: string}} [options] - Options.
+ * @param {{candidateActions?: string[], k?: number, alpha?: number, actionHint?: string, neighbors?: Array<{experience: object, similarity: number}>}} [options] - Options.
+ *   `neighbors` 允许调用方自己提供邻居（store 的召回层 v2 用查询覆盖式相似度检索，
+ *   与这里默认的对称 Jaccard 检索解耦；不传时行为与 Python 参考实现完全一致）。
  * @returns {object} `{intent, V, neighborCount, neighbors, candidates, k, alpha}`.
  */
 export function estimateAdvantages(experiences, intent, options = {}) {
   const k = Math.max(1, Math.trunc(Number(options.k) || DEFAULT_K))
   const alpha = Number.isFinite(Number(options.alpha)) ? Number(options.alpha) : DEFAULT_ALPHA
-  const neighbors = retrieve(experiences, intent, { k, actionHint: options.actionHint || '' })
+  const neighbors = Array.isArray(options.neighbors)
+    ? options.neighbors.slice(0, Math.max(k, options.neighbors.length))
+    : retrieve(experiences, intent, { k, actionHint: options.actionHint || '' })
   const vHat = estimateStateValue(neighbors)
 
   const candidates = []

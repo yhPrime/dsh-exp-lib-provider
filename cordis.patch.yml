@@ -2,8 +2,10 @@
     - id: exp-lib-provider
       name: dsh-exp-lib-provider/plugin
       config:
-        # 仅作兜底；实际以记忆引擎里「经验库」Provider 的数据目录为准（读 memory-providers.json）。
-        dataDir: C:\Users\yh\WorkDeepSeek\插件\经验库\provider-data
-        # 记忆插件的存储根：工具从这里读 Provider 服务设置，用户改数据目录后自动跟随。
-        mnemonDataDir: C:\Users\yh\WorkDeepSeek\.mnemon
+        # 数据目录默认从 $DSH_HOME 派生（$DSH_HOME/exp-lib/provider-data），换机器不用改。
+        # 想固定到别处再取消注释（支持 ~ 开头）：
+        # dataDir: ~/.dsh/exp-lib/provider-data
+        # 记忆插件的存储根：默认自动找 ~/.mnemon、MNEMON_DATA_DIR 与工作区 .mnemon；
+        # 只有记忆插件用了自定义数据目录、自动找不到时才需要填：
+        # mnemonDataDir: ~/.mnemon
         hint: true

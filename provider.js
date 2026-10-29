@@ -35,8 +35,9 @@ export const DATA_DIR_FIELD = {
   scope: 'service',
   role: 'global-location',
   input: 'path',
-  required: true,
-  placeholder: '例如 C:\\Users\\<你>\\WorkDeepSeek\\插件\\经验库\\provider-data',
+  required: false,
+  placeholder: '默认 $DSH_HOME/exp-lib/provider-data，例如 ~/.dsh/exp-lib/provider-data',
+  help: '留空即用默认目录（宿主未注入 DSH_HOME 时用 ~/.dsh）；也可以填 ~ 开头的路径。',
 }
 
 /**
@@ -53,7 +54,7 @@ export function buildProvider(sdk, config = {}) {
       kind: 'provider',
       typeId: PROVIDER_ID,
       packageName: PACKAGE_NAME,
-      version: '0.1.0',
+      version: '0.2.2',
       label: SPACE_NAME,
       summary: 'JitRL 经验记忆：记录做法与结果，按优势召回。',
       origin: 'third-party',

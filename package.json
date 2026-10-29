@@ -1,8 +1,7 @@
 {
   "name": "dsh-exp-lib-provider",
-  "version": "0.1.0",
-  "private": true,
-  "description": "经验库的记忆空间 Provider（后端），同时作为 DSH 插件注册 exp_recall / exp_record 工具。",
+  "version": "0.2.2",
+  "description": "经验库的记忆空间 Provider（后端），同时作为 DSH 插件注册 exp_recall / exp_record / exp_type 工具。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -10,7 +9,8 @@
     "./plugin": "./plugin.js",
     "./provider": "./provider.js",
     "./store": "./store.js",
-    "./tools": "./tools.js"
+    "./tools": "./tools.js",
+    "./retrieval": "./retrieval.js"
   },
   "files": [
     "index.js",
@@ -19,9 +19,15 @@
     "store.js",
     "tools.js",
     "kernel.js",
+    "retrieval.js",
+    "tools/audit.mjs",
     "cordis.patch.yml",
     "README.md"
   ],
+  "scripts": {
+    "test": "node tests/kernel.test.mjs && node tests/recall.test.mjs && node tests/store.test.mjs && node tests/provider.test.mjs && node tests/tools.test.mjs && node tests/plugin.test.mjs && node tests/type-tool.test.mjs",
+    "audit": "node tools/audit.mjs"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -39,9 +45,6 @@
     "experience"
   ],
   "license": "MIT",
-  "scripts": {
-    "test": "node tests/kernel.test.mjs && node tests/store.test.mjs && node tests/provider.test.mjs && node tests/tools.test.mjs && node tests/plugin.test.mjs && node tests/type-tool.test.mjs"
-  },
   "author": "yhPrime",
   "repository": {
     "type": "git",

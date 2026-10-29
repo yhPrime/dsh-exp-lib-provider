@@ -6,6 +6,7 @@
  */
 
 import {
+  assignType,
   createType,
   deleteType,
   listTypes,
@@ -64,6 +65,9 @@ export function buildTools(defineTool, config = {}) {
       })
       writeStore(dataDir, store)
       const typeInfo = result.type || {}
+      const sanitized = result.sanitized || {}
+      const active = store.experiences.filter((item) => !item.deleted_at && !item.superseded_by)
+      const negativeSamples = active.filter((item) => Number(item.G) < 0).length
       return {
         action: result.action,
         id: result.experience.id,
@@ -74,17 +78,23 @@ export function buildTools(defineTool, config = {}) {
         typeCreated: typeInfo.created === true,
         typeMergedInto: typeInfo.mergedInto || null,
         typeWarning: typeInfo.rejected ? `${typeInfo.reason}（已归「未分类」）` : null,
+        typeRecoveredFromNote: result.typeRecoveredFromNote === true,
+        noteSanitized: sanitized.note === true || sanitized.intent === true || sanitized.action === true,
         typeCount: store.types.filter((type) => type.system !== true && type.id !== 'ty_other').length,
         typeLimit: Math.max(1, Math.trunc(Number(config.maxTypes) || 24)),
         supersededId: result.supersededId || null,
-        count: store.experiences.filter((item) => !item.deleted_at && !item.superseded_by).length,
+        count: active.length,
+        negativeSamples,
+        qualityHint: negativeSamples === 0 && active.length >= 4
+          ? '库里目前没有失败/纠正样本：召回会标 mode=evidence（Â 不具区分度）。遇到返工、被纠正或失败，请用 corrected/failed 记一条，负样本才让排序有信息量。'
+          : null,
       }
     },
   })
 
   const recall = defineTool({
     name: 'exp_recall',
-    description: '按任务意图召回历史经验，按 JitRL 优势排序（Â = Q̂ − V̂，乘置信度）。返回做法与证据。',
+    description: '按任务意图召回历史经验。mode=advantage：按 JitRL 优势排序（Â = Q̂ − V̂，乘置信度）；mode=evidence：样本无成败对照，Â 不具区分度，改按相似度×证据强度排序（见 note）。返回做法与证据。',
     parameters: {
       intent: { type: 'string', required: true, description: '当前任务意图。' },
       limit: { type: 'number', description: '返回几条候选做法，默认 8。' },
@@ -99,12 +109,13 @@ export function buildTools(defineTool, config = {}) {
 
   const typeTool = defineTool({
     name: 'exp_type',
-    description: '管理经验类型：list 列表（含条数）/ create 新建 / rename 改名 / merge 合并（经验批量改挂，源类型删除）/ delete 删除（经验归「未分类」）。',
+    description: '管理经验类型：list 列表（含条数）/ create 新建 / rename 改名 / merge 合并（经验批量改挂，源类型删除）/ delete 删除（经验归「未分类」）/ assign 把单条经验改挂到指定类型（定点修脏数据，不动 hits）。',
     parameters: {
-      action: { type: 'string', enum: ['list', 'create', 'rename', 'merge', 'delete'], required: true, description: '要执行的动作。' },
-      name: { type: 'string', description: 'create/rename/delete 时的类型名或 id（rename 时是旧名）。' },
+      action: { type: 'string', enum: ['list', 'create', 'rename', 'merge', 'delete', 'assign'], required: true, description: '要执行的动作。' },
+      name: { type: 'string', description: 'create/rename/delete 时的类型名或 id（rename 时是旧名）；assign 时的目标类型名。' },
       newName: { type: 'string', description: 'rename 的新名；merge 的目标类型名（不存在会新建）。' },
       names: { type: 'array', description: 'merge 时的来源类型名/id 列表。' },
+      id: { type: 'string', description: 'assign 时的经验 id（exp_recall 证据里的 id）。' },
       description: { type: 'string', description: 'create/rename 时可选写描述（≤120 字）。' },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
@@ -125,6 +136,8 @@ export function buildTools(defineTool, config = {}) {
         result = { action, ...mergeTypes(store, args.names, args.newName, args.description) }
       } else if (action === 'delete') {
         result = { action, ...deleteType(store, args.name) }
+      } else if (action === 'assign') {
+        result = { action, ...assignType(store, args.id, args.name) }
       } else {
         throw new Error(`不支持的类型动作：${action}`)
       }

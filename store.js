@@ -13,7 +13,8 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 
 // 内核随包自带（与 dsh-exp-lib-source/kernel.js 同源），Provider 不依赖别的插件包。
-import { abstractState, estimateAdvantages, stateSimilarity, tokenize } from './kernel.js'
+import { OUTCOME_SCORES, abstractState, estimateAdvantages, stateSimilarity, tokenize } from './kernel.js'
+import { RECALL_MIN_SIMILARITY, retrieveV2 } from './retrieval.js'
 
 /** 只有系统兜底类型；业务类型不再预设，由模型在记录时按需创建（带防膨胀限制）。 */
 export const SYSTEM_TYPE = Object.freeze({
@@ -38,11 +39,62 @@ export const DEFAULT_MERGE_THRESHOLD = 0.9
 export const DEFAULT_REPLACE_THRESHOLD = 0.9
 export const DEFAULT_TOMBSTONE_DAYS = 30
 
-/** 默认数据目录：配置优先，其次工作区下的 .exp/exp-lib-provider（可用 EXP_LIB_PROVIDER_DIR 覆盖）。 */
+/**
+ * 优势极差低于此值 → 样本没有成败对照，Â 不具区分度（同意图邻居回报近似相同）。
+ * 召回改用「相似度 × 证据强度」排序，并在输出里明示，别让模型误以为 Â 排序有意义。
+ */
+export const DEGENERATE_ADV_SPREAD = 0.05
+/** 证据强度里「支持条数」的饱和点，与 kernel 的 SUPPORT_FULL 对齐。 */
+const EVIDENCE_SUPPORT_FULL = 3
+
+/** DSH 家目录：宿主会注入 DSH_HOME；没有时退回 ~/.dsh。换机器不用改任何配置。 */
+function dshHome() {
+  const fromEnv = String(process.env.DSH_HOME || '').trim()
+  if (fromEnv !== '') return path.resolve(fromEnv.replace(/^~(?=$|[\\/])/, os.homedir()))
+  return path.join(os.homedir(), '.dsh')
+}
+
+/** 默认数据目录：配置优先，其次 $DSH_HOME/exp-lib/provider-data（可用 EXP_LIB_PROVIDER_DIR 覆盖）。 */
 export function resolveDataDir(config = {}) {
   const configured = String(config.dataDir || process.env.EXP_LIB_PROVIDER_DIR || '').trim()
   if (configured !== '') return path.resolve(configured.replace(/^~(?=$|[\\/])/, os.homedir()))
-  return path.join(process.cwd(), '.exp', 'exp-lib-provider')
+  return path.join(dshHome(), 'exp-lib', 'provider-data')
+}
+
+/**
+ * 从 profile 的 `cordis.patch.yml` 里读记忆插件（mnemon）条目的 `dataDir`。
+ *
+ * 记忆插件用自定义存储根时，那个路径只写在 DSH 自己的 profile 配置里；
+ * 不读它，工具有时找不到 `memory-providers.json`，就会退回空目录、看起来像「库里没有经验」。
+ * 只扫 `- id: mnemon` 那一块，遇到下一条顶层条目就停；读不到返回空串。
+ */
+function mnemonDataDirFromProfilePatch() {
+  const candidates = []
+  const profileDir = String(process.env.DSH_PROFILE_DIR || '').trim()
+  if (profileDir !== '') candidates.push(path.join(profileDir, 'cordis.patch.yml'))
+  const profile = String(process.env.DSH_PROFILE || '').trim()
+  if (profile !== '') candidates.push(path.join(dshHome(), 'profiles', profile, 'cordis.patch.yml'))
+  for (const file of candidates) {
+    let text = ''
+    try {
+      text = fs.readFileSync(file, 'utf8')
+    } catch {
+      continue
+    }
+    let inMnemon = false
+    for (const line of text.split(/\r?\n/)) {
+      if (/^-\s/u.test(line)) {
+        inMnemon = /^-\s+(?:id:\s*mnemon|name:\s*dsh-mnemon)\s*$/u.test(line)
+        continue
+      }
+      if (!inMnemon) continue
+      const match = /^\s+dataDir:\s*(.+?)\s*$/u.exec(line)
+      if (match === null) continue
+      const value = match[1].replace(/^['"]|['"]$/gu, '')
+      if (value !== '' && !value.includes('${')) return path.resolve(value.replace(/^~(?=$|[\\/])/u, os.homedir()))
+    }
+  }
+  return ''
 }
 
 /**
@@ -50,16 +102,21 @@ export function resolveDataDir(config = {}) {
  *
  * 这是「工具跟随配置」的关键：用户在记忆引擎里改了「经验库」的数据目录，
  * 工具不需要重新打包/改 profile，直接读同一份服务设置。
- * 候选位置：显式 providerStateFile → mnemonDataDir → DSH_MNEMON_DATA_DIR → 工作区/.mnemon → 家目录/.mnemon。
+ * 候选位置：显式 providerStateFile → mnemonDataDir → DSH_MNEMON_DATA_DIR → MNEMON_DATA_DIR
+ * → profile 里 mnemon 配置的 dataDir → 工作区/.mnemon → 家目录/.mnemon。
  */
 export function dataDirFromProviderState(config = {}) {
   const files = []
   if (typeof config.providerStateFile === 'string' && config.providerStateFile.trim() !== '') {
     files.push(path.resolve(config.providerStateFile))
   }
+  // 显式配了数据目录/存储根时不再去 profile 里猜：配置优先，避免测试与自定义配置被真实 profile 覆盖。
+  const explicit = String(config.dataDir || '').trim() !== '' || String(config.mnemonDataDir || '').trim() !== ''
   const roots = [
     config.mnemonDataDir,
     process.env.DSH_MNEMON_DATA_DIR,
+    process.env.MNEMON_DATA_DIR,
+    explicit ? '' : mnemonDataDirFromProfilePatch(),
     path.join(process.cwd(), '.mnemon'),
     path.join(os.homedir(), '.mnemon'),
   ]
@@ -254,48 +311,110 @@ function newId() {
   return `ex_${createHash('sha1').update(`${Date.now()}|${Math.random()}`).digest('hex').slice(0, 12)}`
 }
 
-/** 回报：显式 1..-1，或按结果推断。 */
+/** 回报：显式 1..-1，或按结果推断。口径只有一份：kernel 的 OUTCOME_SCORES。 */
 export function scoreOf(outcome, explicit) {
   if (Number.isFinite(Number(explicit))) return Math.max(-1, Math.min(1, Number(explicit)))
-  switch (String(outcome || 'unknown')) {
-    case 'accepted':
-    case 'success':
-      return 1
-    case 'partial':
-      return 0.3
-    case 'failed':
-    case 'corrected':
-      return -0.6
-    case 'aborted':
-      return -0.3
-    default:
-      return 0
-  }
+  return OUTCOME_SCORES[String(outcome || 'unknown')] ?? 0
 }
 
 /**
+ * 清洗工具调用残渣：真实踩过——`note` 里粘了 `</note>` 与 `<parameter name="type">…`，
+ * 结果类型丢了、note 变脏。这里只做恢复性清洗，不改用户写的正常文字。
+ * @returns {{text: string, sanitized: boolean}}
+ */
+export function sanitizeField(raw) {
+  if (raw === undefined || raw === null) return { text: '', sanitized: false }
+  let text = String(raw)
+  let sanitized = false
+  const cut = text.search(/<\s*parameter\b/i)
+  if (cut >= 0) {
+    text = text.slice(0, cut)
+    sanitized = true
+  }
+  const withoutNoteTags = text.replace(/<\/?\s*note\s*>/gi, '')
+  if (withoutNoteTags !== text) {
+    text = withoutNoteTags
+    sanitized = true
+  }
+  const withoutClose = text.replace(/<\/\s*parameter\s*>/gi, '')
+  if (withoutClose !== text) {
+    text = withoutClose
+    sanitized = true
+  }
+  return { text: text.trim(), sanitized }
+}
+
+/** 从残渣里捞回本该在参数里的值（如 `<parameter name="type">PPT / 课件`）。 */
+export function extractParameter(raw, name) {
+  const pattern = new RegExp(`<\\s*parameter[^>]*name\\s*=\\s*["']${String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>([^<]*)`, 'i')
+  const match = pattern.exec(String(raw || ''))
+  return match ? match[1].trim() : ''
+}
+
+function round4(value) {
+  return Math.round(Number(value) * 1e4) / 1e4
+}
+
+/** 证据质量：(加权平均 G + 1) / 2，映射到 [0,1]，负回报会被压到 0.2 以下。 */
+function evidenceQuality(candidate) {
+  if (!Array.isArray(candidate.evidence) || candidate.evidence.length === 0) return 0
+  let weightSum = 0
+  let total = 0
+  for (const item of candidate.evidence) {
+    const weight = Number(item.similarity) > 0 ? Number(item.similarity) : 1
+    total += (Number(item.G) || 0) * weight
+    weightSum += weight
+  }
+  const meanG = weightSum > 0 ? total / weightSum : 0
+  return Math.max(0, Math.min(1, (meanG + 1) / 2))
+}
+
+/**
+ * 证据强度：advantage 无区分度时的排序依据。
+ * = 平均相似度 × 支持度因子 × 证据质量；没有历史证据的候选（support=0）为 0，排在已验证之后。
+ */
+export function evidenceStrengthOf(candidate) {
+  const meanSimilarity = Number(candidate.mean_similarity) || 0
+  const support = Math.max(0, Math.trunc(Number(candidate.support) || 0))
+  if (support === 0) return 0
+  const supportFactor = 0.55 + 0.45 * Math.min(1, support / EVIDENCE_SUPPORT_FULL)
+  return round4(meanSimilarity * supportFactor * evidenceQuality(candidate))
+}
+
+
+/**
  * 写入一条经验（upsert）。
- * @returns {{experience: object, action: 'updated'|'superseded'|'added', supersededId?: string}}
+ * 写入前先清洗工具调用残渣：`</note>`、`<parameter name="type">…` 这类串味会把类型和正文一起弄脏。
+ * @returns {{experience: object, action: 'updated'|'superseded'|'added', supersededId?: string, sanitized: {intent: boolean, action: boolean, note: boolean}, typeRecoveredFromNote: boolean}}
  */
 export function upsertExperience(store, input, options = {}) {
-  const intent = String(input.intent || '').trim()
-  const action = String(input.action || '').trim()
+  const rawNote = input.note === undefined || input.note === null ? '' : String(input.note)
+  const cleanIntent = sanitizeField(input.intent)
+  const cleanAction = sanitizeField(input.action)
+  const cleanNote = sanitizeField(rawNote)
+  const intent = cleanIntent.text
+  const action = cleanAction.text
   if (intent === '' || action === '') throw new Error('intent 与 action 必填')
   const mergeThreshold = Number.isFinite(Number(options.mergeThreshold)) ? Number(options.mergeThreshold) : DEFAULT_MERGE_THRESHOLD
   const replaceThreshold = Number.isFinite(Number(options.replaceThreshold)) ? Number(options.replaceThreshold) : DEFAULT_REPLACE_THRESHOLD
   const outcome = String(input.outcome || 'unknown')
-  const resolved = resolveTypeForRecord(store, input.type, {
+  // 类型丢了但残渣里有（`<parameter name="type">PPT / 课件`）→ 捞回来，别让它掉进「未分类」。
+  const explicitType = String(input.type || '').trim()
+  const recoveredType = explicitType === '' ? extractParameter(rawNote, 'type') : ''
+  const typeName = explicitType !== '' ? explicitType : recoveredType
+  const resolved = resolveTypeForRecord(store, typeName, {
     typeDescription: input.typeDescription,
     maxTypes: options.maxTypes,
     newTypesPerDay: options.newTypesPerDay,
     similarity: options.typeSimilarity,
   })
   const type = resolved.type
-  const hasExplicitType = String(input.type || '').trim() !== ''
+  const hasExplicitType = typeName !== ''
   const state = abstractState(intent, action)
   const now = new Date().toISOString()
   const reward = scoreOf(outcome)
   const active = store.experiences.filter((item) => !item.deleted_at)
+  const sanitized = { intent: cleanIntent.sanitized, action: cleanAction.sanitized, note: cleanNote.sanitized }
 
   // 1) 重复：同做法 + 状态相似度达阈值 → 就地更新
   const duplicate = active.find((item) => actionKeyOf(item.action) === actionKeyOf(action)
@@ -306,17 +425,21 @@ export function upsertExperience(store, input, options = {}) {
     duplicate.outcome = outcome
     duplicate.G = reward
     duplicate.step_rewards = [reward]
-    if (input.note !== undefined && String(input.note).trim() !== '') duplicate.note = String(input.note).trim()
+    if (cleanNote.text !== '') duplicate.note = cleanNote.text
     if (hasExplicitType && type !== undefined) {
       duplicate.typeId = type.id
       duplicate.typeName = type.name
     }
-    return { experience: duplicate, action: 'updated', type: resolved }
+    return { experience: duplicate, action: 'updated', type: resolved, sanitized, typeRecoveredFromNote: recoveredType !== '' }
   }
 
-  // 2) 近似替换：同类型、做法不同、意图相似度达阈值 → 新条 + 旧条 superseded_by
+  // 2) 近似替换：同类型、做法不同、意图相似度达阈值 → 新条 + 旧条 superseded_by。
+  //    但**只在两边都是正回报时才取代**：一旦有一条是失败的，两条都得留着当对照，
+  //    否则库里永远没有负样本，Â 恒为 0，排序就退化成相似度排序。
   const replaceTarget = type === undefined ? undefined : active.find((item) => item.typeId === type.id
     && actionKeyOf(item.action) !== actionKeyOf(action)
+    && reward >= 0
+    && (Number(item.G) || 0) >= 0
     && stateSimilarity(abstractState(intent), abstractState(item.intent)) >= replaceThreshold)
   const experience = {
     id: newId(),
@@ -329,7 +452,7 @@ export function upsertExperience(store, input, options = {}) {
     step_rewards: [reward],
     G: reward,
     outcome,
-    note: input.note === undefined ? '' : String(input.note).trim(),
+    note: cleanNote.text,
     origin: input.origin === 'auto' ? 'auto' : input.origin === 'external' ? 'external' : 'manual',
     typeId: type === undefined ? SYSTEM_TYPE.id : type.id,
     typeName: type === undefined ? SYSTEM_TYPE.name : type.name,
@@ -342,7 +465,7 @@ export function upsertExperience(store, input, options = {}) {
     replaceTarget.superseded_by = experience.id
   }
   store.experiences.push(experience)
-  return { experience, action: replaceTarget === undefined ? 'added' : 'superseded', supersededId: replaceTarget === undefined ? undefined : replaceTarget.id, type: resolved }
+  return { experience, action: replaceTarget === undefined ? 'added' : 'superseded', supersededId: replaceTarget === undefined ? undefined : replaceTarget.id, type: resolved, sanitized, typeRecoveredFromNote: recoveredType !== '' }
 }
 
 /** 软删一条（墓碑）。 */
@@ -375,12 +498,24 @@ export function visibleExperiences(store, options = {}) {
   })
 }
 
-/** 按意图做 JitRL 排序。 */
+/**
+ * 按意图召回并排序。
+ *
+ * 两种模式，输出的 `mode` 字段会说明用的是哪一种：
+ *  - `advantage`：邻居里有成败对照（Â 极差 ≥ DEGENERATE_ADV_SPREAD）→ 按 JitRL 的 Â × 置信度；
+ *  - `evidence`：样本回报几乎相同（实测全是 success/accepted 时 Â 恒为 0）→ Â 不具区分度，
+ *    改按「相似度 × 支持度 × 证据质量」排序，并在 `note` 里明说。
+ *
+ * 不这么降级的话，模型会看到一排 `rank_score: 0` 却以为那是排序结果。
+ */
 export function rankExperiences(store, intent, limit = 8, options = {}) {
   const experiences = visibleExperiences(store, options)
-  if (experiences.length === 0) return { intent, V: 0, neighbor_count: 0, candidates: [] }
+  if (experiences.length === 0) {
+    return { intent, V: 0, neighbor_count: 0, mode: 'evidence', degenerate: true, note: '经验库没有可见条目。', candidates: [] }
+  }
   const k = Math.max(1, Math.trunc(Number(limit) || 8))
-  const result = estimateAdvantages(experiences, intent, { k })
+  const neighbors = retrieveV2(experiences, intent, { k, minSimilarity: options.minSimilarity })
+  const result = estimateAdvantages(experiences, intent, { k, neighbors })
   const byId = new Map(experiences.map((item) => [item.id, item]))
   const candidates = result.candidates.map((candidate) => {
     const row = byId.get((candidate.evidence[0] || {}).id) || null
@@ -408,7 +543,42 @@ export function rankExperiences(store, intent, limit = 8, options = {}) {
       }),
     }
   })
-  return { intent, V: result.V, neighbor_count: result.neighbor_count, candidates }
+
+  const verified = candidates.filter((item) => item.support > 0)
+  const advantages = verified.map((item) => Number(item.advantage) || 0)
+  const spread = advantages.length > 1 ? round4(Math.max(...advantages) - Math.min(...advantages)) : 0
+  const degenerate = verified.length < 2 || spread < DEGENERATE_ADV_SPREAD
+
+  for (const item of candidates) item.evidence_strength = evidenceStrengthOf(item)
+  if (degenerate) {
+    candidates.sort((left, right) => (
+      right.evidence_strength - left.evidence_strength
+      || right.support - left.support
+      || right.mean_similarity - left.mean_similarity
+      || (left.action < right.action ? -1 : left.action > right.action ? 1 : 0)
+    ))
+    for (const item of candidates) item.rank_score = item.evidence_strength
+  }
+
+  let note
+  if (neighbors.length === 0) {
+    note = `没有相似度 ≥ ${RECALL_MIN_SIMILARITY} 的历史经验；先按常规做法做，做完用 exp_record 记一条（失败/被纠正也要记，负样本才让排序有信息量）。`
+  } else if (degenerate) {
+    note = `无成败对照（advantage 极差 ${spread}），Â 不具区分度；已按「相似度 × 支持度 × 证据质量」排序，参考证据而非排名。`
+  } else {
+    note = `按 JitRL 优势排序（Â=Q̂−V̂，乘置信度；advantage 极差 ${spread}）。`
+  }
+
+  return {
+    intent,
+    V: result.V,
+    neighbor_count: result.neighbor_count,
+    mode: degenerate ? 'evidence' : 'advantage',
+    degenerate,
+    advantage_spread: spread,
+    note,
+    candidates,
+  }
 }
 
 /** Insight 视图：给 Provider 的 list / search / graph 用。所有字段都必须是 JSON 值（不能出现 undefined）。 */
@@ -592,6 +762,25 @@ export function deleteType(store, nameOrId) {
 
 
 
+/**
+ * 把单条经验改挂到另一个类型（定点修脏数据用）。
+ *
+ * 为什么需要它：以前一条记错类型的经验只能靠 exp_record 重记——那会把 hits 加 1，
+ * 伪造出一次「复现」，把支持度统计弄脏。考点是「改挂」，不是「重记」。
+ */
+export function assignType(store, id, nameOrId) {
+  ensureSystemType(store.types)
+  const experience = store.experiences.find((item) => String(item.id) === String(id || '').trim())
+  if (experience === undefined) throw new Error(`没有这条经验：${String(id)}`)
+  const type = findType(store.types, nameOrId)
+  if (type === null) throw new Error(`没有这个类型：${String(nameOrId)}（要新建请先 exp_type create）`)
+  if (type.system === true || type.id === SYSTEM_TYPE.id) throw new Error('「未分类」不能作为改挂目标')
+  const from = experience.typeName || SYSTEM_TYPE.name
+  experience.typeId = type.id
+  experience.typeName = type.name
+  return { id: experience.id, from, to: type.name, typeId: type.id, changed: from !== type.name }
+}
+
 /** 每轮提示段的文本：类型目录 + 用法提示（有界，读当前配置的数据文件）。 */
 export function renderHint(config = {}, maxCharacters = 900) {
   let store
@@ -604,7 +793,7 @@ export function renderHint(config = {}, maxCharacters = 900) {
   const userTypes = store.types.filter((type) => type.system !== true && type.id !== SYSTEM_TYPE.id)
   const maxTypes = Math.max(1, Math.trunc(Number(config.maxTypes) || DEFAULT_MAX_TYPES))
   const lines = [
-    "【经验库】接同类任务前用 exp_recall(intent) 查历史做法（按 JitRL 优势排序）；做完一个做法用 exp_record 记结果（同一做法会自动合并）；类型可用 exp_type 管理（list/create/rename/merge/delete）。",
+    "【经验库】接同类任务前用 exp_recall(intent) 查历史做法（看 mode：advantage=有成败对照按 Â 排序；evidence=无对照按证据强度，Â 不具区分度）。做完用 exp_record 记：成功/失败/被纠正都要记，负样本才让排序有信息量；同一意图换做法时复用同一 intent 才有对照。类型用 exp_type 管（含 assign 改单条类型）。",
     `当前 ${active} 条经验；类型 ${userTypes.length}/${maxTypes}。类型不预设：记经验时可给新类型名（会自动建，但会先做近似合并，泛化名归「未分类」）。`,
     "类型（名称用于识别；描述越具体，写入与召回越准）：",
   ]
