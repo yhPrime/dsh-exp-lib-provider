@@ -1,6 +1,6 @@
 # dsh-exp-lib-provider
 
-把「经验库」做成 **dsh-mnemon 的一个记忆空间 Provider**：空间由一个 JSON 文件存储，面板可观可管，模型的写入只走 `exp_record`，读取走 `exp_recall` 或记忆插件的通用检索（内部同一套 JitRL 排序）。
+把「经验库」做成 **dsh-mnemon 的一个记忆空间 Provider**：空间由一个 JSON 文件存储，面板可观可管；模型的写入只走 `exp_record`，读取走 `exp_recall` 或记忆插件的通用检索（内部同一套 JitRL 排序）。
 
 ## 它提供什么
 
@@ -9,23 +9,25 @@
 | `typeId` / 包名 | `exp-lib` / `dsh-exp-lib-provider` |
 | 形态 | 本地 Provider（`locality: local`，`workspaceBinding: optional-override`） |
 | 能力 | search / browse / graph / entities / forget；**remember: false**；`writeMode: exact`、`deletionMode: soft` |
-| 配置字段 | `dataDir`（必填，工作台内的绝对路径） |
+| 配置字段 | `dataDir`（必填，绝对路径） |
 | 工具 | `exp_record`、`exp_recall`（与本 Provider 共用同一份数据） |
 | 数据 | `<dataDir>/exp-lib.json`：`{ version, types[], experiences[] }` |
 
 ## 安装
 
+前置：DSH 已装 `dsh-mnemon`（记忆插件，含 `dsh-mnemon-source-memory-spaces`）。
+
 ```powershell
-# 1) 打包并安装（tarball，避免 pnpm link 导致运行时依赖解析不到）
-cd "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-provider"
+# 打包并安装（用 tarball，不要用目录）
+git clone https://github.com/yhPrime/dsh-exp-lib-provider.git
+cd dsh-exp-lib-provider
 npm pack
-dsh plugin --profile desktop add "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-provider\dist\dsh-exp-lib-provider-0.1.0.tgz"
+dsh plugin --profile <你的 profile> add ".\dist\dsh-exp-lib-provider-0.1.0.tgz"
 ```
 
 > 为什么用 tarball：`dsh plugin add <目录>` 会做 pnpm link，运行时按真实路径解析依赖，宿主提供的 `dsh-mnemon-source-memory-spaces` 会找不到。tarball 安装的是包副本，依赖从 profile 的 `node_modules` 解析。**改完代码要重新 pack + add 才会生效。**
 
-
-2) 在 profile 的 `cordis.patch.yml` 里把 Provider 挂进 memory-spaces 的 providers 列表（**一次性配置**；改前备份）：
+2) 在 profile 的 `cordis.patch.yml` 里把 Provider 挂进 memory-spaces 的 providers 列表（**一次性配置**，改前备份）：
 
 ```yaml
 - id: mnemon-source-memory-spaces
@@ -34,39 +36,49 @@ dsh plugin --profile desktop add "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-pr
     providers:
       - use: dsh-mnemon-provider-mnemon-native
         instanceId: mnemon-native
-      - use: dsh-mnemon-provider-openviking
-        instanceId: openviking
-      - use: dsh-mnemon-provider-honcho
-        instanceId: honcho
-      - use: dsh-mnemon-provider-mem0
-        instanceId: mem0
-      - use: dsh-mnemon-provider-hindsight
-        instanceId: hindsight
-      - use: dsh-mnemon-provider-holographic
-        instanceId: holographic
-      - use: dsh-mnemon-provider-retaindb
-        instanceId: retaindb
-      - use: dsh-mnemon-provider-byterover
-        instanceId: byterover
-      - use: dsh-mnemon-provider-supermemory
-        instanceId: supermemory
+      # …其他 Provider…
       - use: dsh-exp-lib-provider
         instanceId: exp-lib
         config:
-          dataDir: C:\Users\yh\WorkDeepSeek\插件\经验库\provider-data
+          dataDir: <你的数据目录，如 D:\exp-data>
 ```
 
 3) 重启 DSH。
 
-## 两层开关（都能在界面里启停）| 层 | 位置 | 控制什么 ||---|---|---|| **DSH 插件** | 插件管理（bundles 里能看到 `dsh-exp-lib-provider`） | 工具面：`exp_recall` / `exp_record` 是否可用 || **记忆 Provider** | 记忆引擎 → Provider 列表里的「经验库」 | 存储/空间：这个 Provider 是否参与记忆空间 | 装好后两处都要开：插件管理里启用插件；记忆引擎里把「经验库」的开关打开。Provider 卡片显示「未启用」是正常的，点右侧开关即可。\n\n## 数据目录从哪来（优先级）\n\n工具面与 Provider 读的是同一份配置：\n\n1. 记忆引擎里「经验库」Provider 的数据目录（`memory-providers.json` 的 `services[\"exp-lib\"].dataDir`）——改了它，工具自动跟随；\n2. 读不到时退回本插件在 `cordis.patch.yml` 里的 `dataDir`；\n3. 再退回工作区下 `.exp/exp-lib-provider`。\n\n所以不必为了改路径重新打包；改 Provider 设置即可。\n\n## 创建空间
+## 两层开关
+
+两处都能在界面里启停，装好后都要打开：
+
+| 层 | 位置 | 控制什么 |
+|---|---|---|
+| **DSH 插件** | 插件管理（bundles 里能看到 `dsh-exp-lib-provider`） | 工具面：`exp_recall` / `exp_record` 是否可用 |
+| **记忆 Provider** | 记忆引擎 → Provider 列表里的「经验库」 | 存储/空间：这个 Provider 是否参与记忆空间 |
+
+Provider 卡片显示「未启用」是正常的，点右侧开关即可。
+
+## 数据目录从哪来（优先级）
+
+工具面与 Provider 读的是同一份配置：
+
+1. 记忆引擎里「经验库」Provider 的数据目录（`memory-providers.json` 的 `services["exp-lib"].dataDir`）——改了它，工具自动跟随；
+2. 读不到时退回本插件在 `cordis.patch.yml` 里的 `dataDir`；
+3. 再退回工作区下的 `.exp/exp-lib-provider`。
+
+所以不必为了改路径重新打包，改 Provider 设置即可。
+
+## 创建空间
 
 重启后：**记忆插件 → 记忆空间 → 新建**，选 Provider「经验库」，名称填 `经验库`，描述用默认或自己写：
 
 > 存放工作的经验：每条记录做法与结果，按 JitRL 优势召回，供接同类任务前参考。
 
-启用后，模型的数据会写在 `<dataDir>/exp-lib.json`。
+启用后，数据写在 `<dataDir>/exp-lib.json`。
 
-## 每轮提示层\n\n插件启用时会向系统提示追加一段有界文本（`order: 160`）：类型目录 + 用法提示（`exp_recall` / `exp_record`）。内容每轮动态读当前数据文件，条数会跟着变；`config.hint: false` 可关掉。它不经过记忆组合（不需要 scoped 策略），**禁用插件即消失**。\n\n## 语义
+## 每轮提示层
+
+插件启用时会向系统提示追加一段有界文本（`order: 160`）：类型目录 + 用法提示（`exp_recall` / `exp_record`）。内容每轮动态读当前数据文件，条数会跟着变；`config.hint: false` 可关掉。它不经过记忆组合（不需要 scoped 策略），**禁用插件即消失**。
+
+## 语义
 
 - **写入唯一入口**：`exp_record(intent, action, outcome?, type?, note?)`
   - 重复（同做法、相似度 ≥ 0.9）→ 就地更新 `hits / outcome / note`；
@@ -74,7 +86,8 @@ dsh plugin --profile desktop add "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-pr
   - 其他 → 追加。
 - **读取**：`exp_recall(intent, limit?)` → 邻居检索 → `Â = Q̂ − V̂` → `rank_score = Â × confidence`；默认过滤已删与已被取代的旧条。
 - **通用 `remember` 被禁用**：面板不出现通用写入入口；若宿主仍调用，返回错误提示改用 `exp_record`。
-- **契约：adapter 方法一律 async**（返回 Promise）——`discover / status / search / list / graph / entityIndex / remember / forget`。memory-spaces 会把返回值直接当 Promise 用（`untilAborted(discover())`、`status().catch(...)`），同步值会报 `… is not a function`；这类坑已踩过两次（2026-10-29 的 discover 与本日的 status）。- **忘记 = 软删墓碑**：`deleted_at` 置位，保留 30 天后启动时清理；`forget` 后检索与内容页都不再显示。
+- **契约：adapter 方法一律 async**（返回 Promise）：`discover / status / search / list / graph / entityIndex / remember / forget`。memory-spaces 会把返回值直接当 Promise 用（`untilAborted(discover())`、`status().catch(...)`），返回同步值会报 `… is not a function`。
+- **忘记 = 软删墓碑**：`deleted_at` 置位，保留 30 天后启动时清理；`forget` 后检索与内容页都不再显示。
 
 ## 面板能看到的
 
@@ -90,11 +103,18 @@ dsh plugin --profile desktop add "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-pr
 ## 测试
 
 ```powershell
-cd dsh-exp-lib-provider
-node tests/store.test.mjs      # 9 项：upsert 三分支 / 墓碑 / 过滤 / 排序 / 观测
-node tests/provider.test.mjs   # 11 项：manifest / Promise 契约 / status / discover / 拒收 remember / search / graph / forget
-node tests/tools.test.mjs      # 7 项：两工具与 Provider 同一文件同一语义
+npm test
 ```
+
+52 项全绿，细分：
+
+| 文件 | 项数 | 覆盖 |
+|---|---|---|
+| `tests/kernel.test.mjs` | 19 | JitRL 数学：相似度、V̂/Q̂、乐观估计、优势排序 |
+| `tests/store.test.mjs` | 10 | upsert 三分支 / 墓碑 TTL / 过滤 / 排序 / 数据目录跟随 |
+| `tests/provider.test.mjs` | 11 | manifest / Promise 契约 / status / discover / 拒收 remember / search / graph / forget |
+| `tests/tools.test.mjs` | 7 | `exp_record` / `exp_recall` 与 Provider 同一文件同一语义 |
+| `tests/plugin.test.mjs` | 5 | 插件注入、每轮提示段、启动日志 |
 
 内核（JitRL 数学）随包自带，Provider 不依赖其他插件包。
 
@@ -102,4 +122,8 @@ node tests/tools.test.mjs      # 7 项：两工具与 Provider 同一文件同�
 
 - 只做**一个空间**：所有数据写同一个 `exp-lib.json`；多空间共用会混在一起。
 - 没有单条「编辑」入口（协议没有 update）；改内容 = 再记一次（就地更新或取代）。
-- `dataDir` 由你配置。建议放工作台内便于 Git 与备份，但宪法 v2.4 不强制——插件数据位置由插件自己决定。
+- `dataDir` 由你配置：放哪由你决定（放工作区内便于 Git 与备份）。
+
+## License
+
+MIT
