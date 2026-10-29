@@ -31,8 +31,16 @@
     "dsh-mnemon-source-memory-spaces": "^0.5.0",
     "@deepseek-ai/dsh-tools": "*"
   },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-mnemon",
+    "memory-space-provider",
+    "experience"
+  ],
+  "license": "MIT",
   "scripts": {
-    "test": "node tests/kernel.test.mjs && node tests/store.test.mjs && node tests/provider.test.mjs && node tests/tools.test.mjs && node tests/plugin.test.mjs"
+    "test": "node tests/kernel.test.mjs && node tests/store.test.mjs && node tests/provider.test.mjs && node tests/tools.test.mjs && node tests/plugin.test.mjs && node tests/type-tool.test.mjs"
   },
   "author": "yhPrime",
   "repository": {
@@ -42,13 +50,5 @@
   "homepage": "https://github.com/yhPrime/dsh-exp-lib-provider#readme",
   "bugs": {
     "url": "https://github.com/yhPrime/dsh-exp-lib-provider/issues"
-  },
-  "keywords": [
-    "deepseek-harness",
-    "dsh",
-    "dsh-mnemon",
-    "memory-space-provider",
-    "experience"
-  ],
-  "license": "MIT"
+  }
 }

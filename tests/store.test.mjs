@@ -126,6 +126,44 @@ check('持久化：writeStore 后 readStore 内容一致', () => {
   assert.ok(again.types.length >= 1)
 })
 
+check('类型不预设：按需自动创建 + 近似合并 + 泛化名 + 上限 + 每日上限', () => {
+  const d1 = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-types-'))
+  const s1 = readStore(d1)
+  assert.equal(s1.types.length, 1)
+  assert.equal(s1.types[0].name, '未分类')
+
+  const created = upsertExperience(s1, { intent: '做研学课', action: '先定主题色', type: '研学课设计', typeDescription: '研学课教案与流程' })
+  assert.equal(created.type.created, true)
+  assert.equal(created.experience.typeName, '研学课设计')
+  assert.equal(s1.types.filter((type) => type.system !== true).length, 1)
+
+  const exact = upsertExperience(s1, { intent: '做研学课', action: '先定主题色', type: '研学课设计' })
+  assert.equal(exact.type.created, false)
+
+  const near = upsertExperience(s1, { intent: '做研学课', action: '先写大纲', type: '研学课设计方法' })
+  assert.equal(near.type.created, false)
+  assert.equal(near.type.mergedInto, '研学课设计')
+
+  const generic = upsertExperience(s1, { intent: '随便做点', action: '试试', type: '其他' })
+  assert.equal(generic.experience.typeName, '未分类')
+  assert.equal(generic.type.created, false)
+
+  const capped = readStore(fs.mkdtempSync(path.join(os.tmpdir(), 'exp-types-cap-')))
+  upsertExperience(capped, { intent: '任务一', action: '做法一', type: 'PPT制作' }, { maxTypes: 1 })
+  const over = upsertExperience(capped, { intent: '任务二', action: '做法二', type: '代码插件' }, { maxTypes: 1 })
+  assert.equal(over.type.created, false)
+  assert.equal(over.type.rejected, 'limit')
+  assert.equal(over.experience.typeName, '未分类')
+
+  const rated = readStore(fs.mkdtempSync(path.join(os.tmpdir(), 'exp-types-rate-')))
+  upsertExperience(rated, { intent: '任务一', action: '做法一', type: 'PPT制作' }, { maxTypes: 10, newTypesPerDay: 1 })
+  const rate = upsertExperience(rated, { intent: '任务二', action: '做法二', type: '代码插件' }, { maxTypes: 10, newTypesPerDay: 1 })
+  assert.equal(rate.type.created, false)
+  assert.equal(rate.type.rejected, 'rate')
+
+  for (const temp of [d1]) fs.rmSync(temp, { recursive: true, force: true })
+})
+
 check('跟随配置：从记忆插件状态里读 Provider 数据目录', () => {
   const stateFile = path.join(dir, 'memory-providers.json')
   fs.writeFileSync(stateFile, JSON.stringify({ services: { 'exp-lib': { dataDir: path.join(dir, 'from-state') } } }), 'utf8')

@@ -15,18 +15,21 @@ import { createHash } from 'node:crypto'
 // 内核随包自带（与 dsh-exp-lib-source/kernel.js 同源），Provider 不依赖别的插件包。
 import { abstractState, estimateAdvantages, stateSimilarity, tokenize } from './kernel.js'
 
-const DEFAULT_TYPES = [
-  { id: 'ty_ppt', name: 'PPT / 课件', description: '做幻灯片、课件类任务：研学课、常规课 PPT、插页、改版式。写入记做法/页数/模板/坑；召回看同类页面怎么做的。' },
-  { id: 'ty_doc', name: '文档 / 教案', description: '写或改 Word 文档、教案、讲义、学习任务单。' },
-  { id: 'ty_sheet', name: '表格 / 数据', description: 'Excel、CSV、表格整理与数据报表。' },
-  { id: 'ty_code', name: '代码 / 插件', description: '写代码、改插件、修 bug、重构、跑测试。' },
-  { id: 'ty_research', name: '调研 / 资料', description: '查资料、读论文、做调研与总结。' },
-  { id: 'ty_image', name: '图片 / 视觉', description: '图片、图标、海报与视觉稿。' },
-  { id: 'ty_web', name: '网页 / 抓取', description: '网页、站点、抓取与浏览器操作。' },
-  { id: 'ty_writing', name: '文案 / 写作', description: '写文案、润色、改写稿件。' },
-  { id: 'ty_ops', name: '环境 / 部署', description: '装环境、部署、改配置。' },
-  { id: 'ty_other', name: '未分类', description: '暂时不确定归哪类；确认后改到具体类型。' },
-]
+/** 只有系统兜底类型；业务类型不再预设，由模型在记录时按需创建（带防膨胀限制）。 */
+export const SYSTEM_TYPE = Object.freeze({
+  id: 'ty_other',
+  name: '未分类',
+  description: '兜底：没给类型或新类型被拒绝/超限时归到这里。',
+  system: true,
+})
+
+/** 类型防膨胀：上限、每天新增上限、名称近似判定阈值。 */
+export const DEFAULT_MAX_TYPES = 24
+export const DEFAULT_NEW_TYPES_PER_DAY = 6
+export const DEFAULT_TYPE_SIMILARITY = 0.8
+
+/** 这些名字太泛，直接归「未分类」，不新建类型。 */
+const GENERIC_TYPE_NAMES = new Set(['其他', '其它', '杂项', '别的', '临时', '随便', '未分类', 'other', 'misc'])
 
 export const FILE_NAME = 'exp-lib.json'
 export const SPACE_NAME = '经验库'
@@ -104,11 +107,11 @@ export function readStore(dataDir) {
   const file = storeFile(dataDir)
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
-    const types = Array.isArray(raw.types) && raw.types.length > 0 ? raw.types : DEFAULT_TYPES
+    const types = (Array.isArray(raw.types) && raw.types.length > 0 ? raw.types : [{ ...SYSTEM_TYPE }]).map((type) => (type && type.id === SYSTEM_TYPE.id ? { ...type, system: true } : type))
     const experiences = Array.isArray(raw.experiences) ? raw.experiences.filter((item) => item && typeof item === 'object') : []
     return { version: Number(raw.version) || 1, types, experiences }
   } catch {
-    return { version: 1, types: DEFAULT_TYPES.map((type) => ({ ...type })), experiences: [] }
+    return { version: 1, types: [{ ...SYSTEM_TYPE }], experiences: [] }
   }
 }
 
@@ -119,7 +122,7 @@ export function writeStore(dataDir, store) {
   const payload = {
     version: 1,
     updated_at: new Date().toISOString(),
-    types: Array.isArray(store.types) && store.types.length > 0 ? store.types : DEFAULT_TYPES,
+    types: Array.isArray(store.types) && store.types.length > 0 ? store.types : [{ ...SYSTEM_TYPE }],
     experiences: Array.isArray(store.experiences) ? store.experiences : [],
   }
   fs.writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
@@ -135,6 +138,112 @@ export function findType(types, value) {
   const key = String(value || '').trim().toLowerCase()
   if (key === '') return null
   return (types || []).find((type) => String(type.id).toLowerCase() === key || String(type.name).toLowerCase() === key) || null
+}
+
+/** 类型名规范化：NFKC、去控制字符、压空白、限长。返回 '' 表示无效。 */
+export function normalizeTypeName(raw) {
+  if (typeof raw !== 'string') return ''
+  const cleaned = raw.normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().replace(/\s+/g, ' ')
+  if (cleaned.length < 2) return ''
+  return cleaned.slice(0, 16)
+}
+
+function typeBigrams(name) {
+  const text = normalizeTypeName(name).toLowerCase().replace(/\s+/g, '')
+  const set = new Set()
+  if (text.length <= 1) {
+    if (text !== '') set.add(text)
+    return set
+  }
+  for (let i = 0; i < text.length - 1; i += 1) set.add(text.slice(i, i + 2))
+  return set
+}
+
+/** 两个类型名的字符二元组 Jaccard 相似度。 */
+export function typeNameSimilarity(left, right) {
+  const a = typeBigrams(left)
+  const b = typeBigrams(right)
+  if (a.size === 0 || b.size === 0) return 0
+  let intersection = 0
+  for (const gram of a) if (b.has(gram)) intersection += 1
+  return intersection / (a.size + b.size - intersection)
+}
+
+function ensureSystemType(types) {
+  if (!types.some((type) => type.system === true || type.id === SYSTEM_TYPE.id)) types.push({ ...SYSTEM_TYPE })
+}
+
+function startOfToday(now) {
+  const date = new Date(now)
+  date.setHours(0, 0, 0, 0)
+  return date.getTime()
+}
+
+/**
+ * 决定一条经验该用哪个类型；没有就按需创建，但有四道防膨胀限制：
+ *  1. 规范化 + 长度限制（2–16 字符）；
+ *  2. 与现有类型近似（二元组 Jaccard ≥ similarity）→ 归到已有的，不新建；
+ *  3. 泛化名（其他/杂项/随便…）→ 未分类；
+ *  4. 数量上限（maxTypes）与每日新增上限（newTypesPerDay）→ 超限归未分类并给出原因。
+ * @returns {{type: object, created: boolean, mergedInto?: string, rejected?: string, reason?: string}}
+ */
+export function resolveTypeForRecord(store, rawName, options = {}) {
+  ensureSystemType(store.types)
+  const fallback = store.types.find((type) => type.id === SYSTEM_TYPE.id)
+  const name = normalizeTypeName(rawName)
+  if (name === '') return { type: fallback, created: false, reason: name === '' && String(rawName || '').trim() !== '' ? 'invalid-name' : 'no-type' }
+  if (GENERIC_TYPE_NAMES.has(name.toLowerCase())) return { type: fallback, created: false, reason: 'generic-name' }
+
+  const existing = findType(store.types, name)
+  if (existing !== null) return { type: existing, created: false }
+
+  const similarity = Number.isFinite(Number(options.similarity)) ? Number(options.similarity) : DEFAULT_TYPE_SIMILARITY
+  const lowered = name.toLowerCase()
+  for (const type of store.types) {
+    if (type.system === true || type.id === SYSTEM_TYPE.id) continue
+    const existingName = String(type.name).toLowerCase()
+    if (existingName !== '' && (existingName.includes(lowered) || lowered.includes(existingName))) {
+      return { type, created: false, mergedInto: type.name, reason: 'similar-name' }
+    }
+  }
+  let nearest = null
+  let nearestScore = 0
+  for (const type of store.types) {
+    if (type.system === true || type.id === SYSTEM_TYPE.id) continue
+    const score = typeNameSimilarity(name, type.name)
+    if (score > nearestScore) {
+      nearestScore = score
+      nearest = type
+    }
+  }
+  if (nearest !== null && nearestScore >= similarity) {
+    return { type: nearest, created: false, mergedInto: nearest.name, reason: 'similar-name' }
+  }
+
+  const userTypes = store.types.filter((type) => type.system !== true && type.id !== SYSTEM_TYPE.id)
+  const maxTypes = Math.max(1, Math.trunc(Number(options.maxTypes) || DEFAULT_MAX_TYPES))
+  if (userTypes.length >= maxTypes) {
+    return { type: fallback, created: false, rejected: 'limit', reason: `已达到类型上限 ${maxTypes}` }
+  }
+  const perDay = Math.max(1, Math.trunc(Number(options.newTypesPerDay) || DEFAULT_NEW_TYPES_PER_DAY))
+  const today = startOfToday(Date.now())
+  const createdToday = userTypes.filter((type) => {
+    const at = Date.parse(type.createdAt || '')
+    return Number.isFinite(at) && at >= today
+  }).length
+  if (createdToday >= perDay) {
+    return { type: fallback, created: false, rejected: 'rate', reason: `每天最多新建 ${perDay} 个类型` }
+  }
+
+  const type = {
+    id: `ty_${createHash('sha1').update(name.toLowerCase()).digest('hex').slice(0, 8)}`,
+    name,
+    description: String(options.typeDescription || '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, 120),
+    createdAt: new Date().toISOString(),
+    source: 'model-created',
+  }
+  store.types.push(type)
+  return { type, created: true }
 }
 
 function actionKeyOf(action) {
@@ -175,8 +284,14 @@ export function upsertExperience(store, input, options = {}) {
   const mergeThreshold = Number.isFinite(Number(options.mergeThreshold)) ? Number(options.mergeThreshold) : DEFAULT_MERGE_THRESHOLD
   const replaceThreshold = Number.isFinite(Number(options.replaceThreshold)) ? Number(options.replaceThreshold) : DEFAULT_REPLACE_THRESHOLD
   const outcome = String(input.outcome || 'unknown')
-  const requestedType = findType(store.types, input.type)
-  const type = requestedType || findType(store.types, '未分类')
+  const resolved = resolveTypeForRecord(store, input.type, {
+    typeDescription: input.typeDescription,
+    maxTypes: options.maxTypes,
+    newTypesPerDay: options.newTypesPerDay,
+    similarity: options.typeSimilarity,
+  })
+  const type = resolved.type
+  const hasExplicitType = String(input.type || '').trim() !== ''
   const state = abstractState(intent, action)
   const now = new Date().toISOString()
   const reward = scoreOf(outcome)
@@ -192,15 +307,15 @@ export function upsertExperience(store, input, options = {}) {
     duplicate.G = reward
     duplicate.step_rewards = [reward]
     if (input.note !== undefined && String(input.note).trim() !== '') duplicate.note = String(input.note).trim()
-    if (requestedType !== null) {
-      duplicate.typeId = requestedType.id
-      duplicate.typeName = requestedType.name
+    if (hasExplicitType && type !== undefined) {
+      duplicate.typeId = type.id
+      duplicate.typeName = type.name
     }
-    return { experience: duplicate, action: 'updated' }
+    return { experience: duplicate, action: 'updated', type: resolved }
   }
 
   // 2) 近似替换：同类型、做法不同、意图相似度达阈值 → 新条 + 旧条 superseded_by
-  const replaceTarget = type === null ? undefined : active.find((item) => item.typeId === type.id
+  const replaceTarget = type === undefined ? undefined : active.find((item) => item.typeId === type.id
     && actionKeyOf(item.action) !== actionKeyOf(action)
     && stateSimilarity(abstractState(intent), abstractState(item.intent)) >= replaceThreshold)
   const experience = {
@@ -216,8 +331,9 @@ export function upsertExperience(store, input, options = {}) {
     outcome,
     note: input.note === undefined ? '' : String(input.note).trim(),
     origin: input.origin === 'auto' ? 'auto' : input.origin === 'external' ? 'external' : 'manual',
-    typeId: type === null ? 'ty_other' : type.id,
-    typeName: type === null ? '未分类' : type.name,
+    typeId: type === undefined ? SYSTEM_TYPE.id : type.id,
+    typeName: type === undefined ? SYSTEM_TYPE.name : type.name,
+    typeSource: resolved.created ? 'created' : 'existing',
     deleted_at: null,
     superseded_by: null,
   }
@@ -226,7 +342,7 @@ export function upsertExperience(store, input, options = {}) {
     replaceTarget.superseded_by = experience.id
   }
   store.experiences.push(experience)
-  return { experience, action: replaceTarget === undefined ? 'added' : 'superseded', supersededId: replaceTarget === undefined ? undefined : replaceTarget.id }
+  return { experience, action: replaceTarget === undefined ? 'added' : 'superseded', supersededId: replaceTarget === undefined ? undefined : replaceTarget.id, type: resolved }
 }
 
 /** 软删一条（墓碑）。 */
@@ -295,10 +411,10 @@ export function rankExperiences(store, intent, limit = 8, options = {}) {
   return { intent, V: result.V, neighbor_count: result.neighbor_count, candidates }
 }
 
-/** Insight 视图：给 Provider 的 list / search / graph 用。 */
+/** Insight 视图：给 Provider 的 list / search / graph 用。所有字段都必须是 JSON 值（不能出现 undefined）。 */
 export function toInsight(experience, score) {
   const tokens = tokenize(`${experience.intent} ${experience.action}`)
-  return {
+  const insight = {
     id: experience.id,
     content: `[${experience.typeName}] ${experience.intent} → ${experience.action}（${experience.outcome}${experience.note ? `；${experience.note}` : ''}）`,
     category: 'insight',
@@ -306,8 +422,10 @@ export function toInsight(experience, score) {
     tags: [experience.typeName, experience.origin].filter(Boolean),
     entities: tokens.slice(0, 6),
     source: experience.origin === 'manual' ? 'user' : experience.origin === 'auto' ? 'agent' : 'external',
-    score: Number.isFinite(score) ? score : undefined,
   }
+  // 关键：无分数时**不要**写 `score: undefined`——宿主会报 "management result contains a non-JSON value"。
+  if (Number.isFinite(score)) insight.score = score
+  return insight
 }
 
 export function listInsights(store, options = {}) {
@@ -367,6 +485,112 @@ export function describeSpace() {
   return `${SPACE_NAME}：${SPACE_DESCRIPTION}`
 }
 
+/** 类型列表（含使用条数）；system 类型排在最后。 */
+export function listTypes(store) {
+  const counts = new Map()
+  for (const item of store.experiences) {
+    if (item.deleted_at) continue
+    counts.set(item.typeId, (counts.get(item.typeId) || 0) + 1)
+  }
+  return store.types
+    .map((type) => ({
+      id: type.id,
+      name: type.name,
+      description: type.description || '',
+      system: type.system === true || type.id === SYSTEM_TYPE.id,
+      source: type.source || 'preset',
+      createdAt: type.createdAt || '',
+      count: counts.get(type.id) || 0,
+    }))
+    .sort((left, right) => Number(left.system) - Number(right.system) || right.count - left.count || left.name.localeCompare(right.name, 'zh'))
+}
+
+function requireEditableType(store, nameOrId) {
+  const type = findType(store.types, nameOrId)
+  if (type === null) throw new Error(`没有这个类型：${String(nameOrId)}`)
+  if (type.system === true || type.id === SYSTEM_TYPE.id) throw new Error('「未分类」是系统类型，不能改名/删除')
+  return type
+}
+
+function ensureUniqueName(store, name, exceptId) {
+  const existing = store.types.find((type) => type.id !== exceptId && String(type.name).toLowerCase() === name.toLowerCase())
+  if (existing !== undefined) throw new Error(`类型名已存在：${name}（要合并请用 merge）`)
+}
+
+/** 新建一个管理动作显式指定的类型（不走每日创建配额）。 */
+export function createType(store, rawName, description = '') {
+  const name = normalizeTypeName(rawName)
+  if (name === '') throw new Error('类型名无效（2–16 个字符）')
+  if (findType(store.types, name) !== null) throw new Error(`类型已存在：${name}`)
+  const type = {
+    id: `ty_${createHash('sha1').update(name.toLowerCase()).digest('hex').slice(0, 8)}`,
+    name,
+    description: String(description || '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, 120),
+    createdAt: new Date().toISOString(),
+    source: 'model-created',
+  }
+  store.types.push(type)
+  return type
+}
+
+/** 改名；同步更新引用它的经验。 */
+export function renameType(store, nameOrId, rawNewName, description) {
+  const type = requireEditableType(store, nameOrId)
+  const newName = normalizeTypeName(rawNewName)
+  if (newName === '') throw new Error('新类型名无效（2–16 个字符）')
+  ensureUniqueName(store, newName, type.id)
+  const oldName = type.name
+  type.name = newName
+  if (description !== undefined) type.description = String(description || '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, 120)
+  for (const item of store.experiences) {
+    if (item.typeId === type.id) item.typeName = newName
+  }
+  return { type, oldName }
+}
+
+/** 合并多个类型到一个目标类型；经验批量改挂，源类型删除。 */
+export function mergeTypes(store, names, rawTargetName, description) {
+  ensureSystemType(store.types)
+  const sources = [...new Set((Array.isArray(names) ? names : [names]).map((name) => findType(store.types, name)).filter((type) => type !== null))]
+  if (sources.length === 0) throw new Error('没有找到要合并的类型')
+  if (sources.some((type) => type.system === true || type.id === SYSTEM_TYPE.id)) throw new Error('「未分类」是系统类型，不能作为合并来源')
+
+  const targetName = normalizeTypeName(rawTargetName) || sources[0].name
+  let target = findType(store.types, targetName)
+  if (target === null) target = createType(store, targetName, description || '')
+  else if (target.system === true) throw new Error('不能合并到「未分类」；请指定一个业务类型作为目标')
+
+  let moved = 0
+  const sourceIds = new Set(sources.map((type) => type.id).filter((id) => id !== target.id))
+  for (const item of store.experiences) {
+    if (sourceIds.has(item.typeId)) {
+      item.typeId = target.id
+      item.typeName = target.name
+      moved += 1
+    }
+  }
+  store.types = store.types.filter((type) => !sourceIds.has(type.id))
+  return { target: target.name, targetId: target.id, moved, removed: sourceIds.size }
+}
+
+/** 删除类型；经验归「未分类」。 */
+export function deleteType(store, nameOrId) {
+  const type = requireEditableType(store, nameOrId)
+  ensureSystemType(store.types)
+  const fallback = store.types.find((item) => item.id === SYSTEM_TYPE.id)
+  let moved = 0
+  for (const item of store.experiences) {
+    if (item.typeId === type.id) {
+      item.typeId = fallback.id
+      item.typeName = fallback.name
+      moved += 1
+    }
+  }
+  store.types = store.types.filter((item) => item.id !== type.id)
+  return { deleted: type.name, moved }
+}
+
+
 
 /** 每轮提示段的文本：类型目录 + 用法提示（有界，读当前配置的数据文件）。 */
 export function renderHint(config = {}, maxCharacters = 900) {
@@ -374,12 +598,15 @@ export function renderHint(config = {}, maxCharacters = 900) {
   try {
     store = readStore(resolveToolDataDir(config))
   } catch {
-    store = { types: DEFAULT_TYPES, experiences: [] }
+    store = { types: [{ ...SYSTEM_TYPE }], experiences: [] }
   }
   const active = store.experiences.filter((item) => !item.deleted_at && !item.superseded_by).length
+  const userTypes = store.types.filter((type) => type.system !== true && type.id !== SYSTEM_TYPE.id)
+  const maxTypes = Math.max(1, Math.trunc(Number(config.maxTypes) || DEFAULT_MAX_TYPES))
   const lines = [
-    "【经验库】接同类任务前用 exp_recall(intent) 查历史做法（按 JitRL 优势排序）；做完一个做法用 exp_record 记结果（同一做法会自动合并）。",
-    `当前 ${active} 条经验。类型（名称用于识别，描述说明写什么/召回什么）：`,
+    "【经验库】接同类任务前用 exp_recall(intent) 查历史做法（按 JitRL 优势排序）；做完一个做法用 exp_record 记结果（同一做法会自动合并）；类型可用 exp_type 管理（list/create/rename/merge/delete）。",
+    `当前 ${active} 条经验；类型 ${userTypes.length}/${maxTypes}。类型不预设：记经验时可给新类型名（会自动建，但会先做近似合并，泛化名归「未分类」）。`,
+    "类型（名称用于识别；描述越具体，写入与召回越准）：",
   ]
   for (const type of store.types) {
     const description = String(type.description || "").replace(/\s+/g, " ").trim()

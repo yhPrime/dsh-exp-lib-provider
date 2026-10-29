@@ -15,6 +15,25 @@ import { buildProvider } from '../provider.js'
 import { SPACE_DESCRIPTION, SPACE_NAME, readStore, upsertExperience, writeStore } from '../store.js'
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-provider-'))
+
+/** 宿主会把管理结果按 JSON 校验；undefined / NaN / Infinity / function 都会报 non-JSON value。 */
+function assertJsonValue(value, label) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return
+  if (typeof value === 'number') {
+    assert.ok(Number.isFinite(value), `${label}: 非有限数字 ${value}`)
+    return
+  }
+  assert.equal(typeof value, 'object', `${label}: 出现了非 JSON 值（${typeof value}）`)
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertJsonValue(item, `${label}[${index}]`))
+    return
+  }
+  for (const [key, item] of Object.entries(value)) {
+    assert.notEqual(item, undefined, `${label}.${key} 是 undefined`)
+    assertJsonValue(item, `${label}.${key}`)
+  }
+}
+
 const sdk = {
   apiVersion: 'dsh-mnemon.memory-space-provider/v1',
   defineMemorySpaceProviderDefinition: (definition) => definition,
@@ -142,6 +161,15 @@ await check('entityIndex：实体索引完整', async () => {
   const index = await adapter.entityIndex({})
   assert.equal(index.complete, true)
   assert.ok(Array.isArray(index.memories))
+})
+
+await check('管理结果全是 JSON 值（无 undefined / NaN，宿主不会报 non-JSON value）', async () => {
+  assertJsonValue(await adapter.discover({}), 'discover')
+  assertJsonValue(await adapter.status({}), 'status')
+  assertJsonValue(await adapter.list({}, { limit: 10 }), 'list')
+  assertJsonValue(await adapter.search({}, { query: '做研学课PPT', limit: 5 }), 'search')
+  assertJsonValue(await adapter.graph({}), 'graph')
+  assertJsonValue(await adapter.entityIndex({}), 'entityIndex')
 })
 
 await check('forget：软删后状态与检索都排除', async () => {
