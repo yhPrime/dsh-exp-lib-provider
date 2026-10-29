@@ -1,6 +1,10 @@
 /**
  * Provider 契约测试：manifest / adapter 方法形状（stub SDK + 临时目录）。
  * Run: node tests/provider.test.mjs
+ *
+ * 注意：memory-spaces 的 MemoryProviderAdapter 把数据面方法都当 Promise 用
+ * （`untilAborted(discover())`、`status().catch(...)`），所以这里断言每个方法
+ * 返回 thenable——同步返回值会让宿主崩在 `.then/.catch is not a function`。
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -8,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { buildProvider } from '../provider.js'
-import { SPACE_DESCRIPTION, SPACE_NAME, readStore, storeFile, upsertExperience, writeStore } from '../store.js'
+import { SPACE_DESCRIPTION, SPACE_NAME, readStore, upsertExperience, writeStore } from '../store.js'
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-provider-'))
 const sdk = {
@@ -20,9 +24,9 @@ const adapter = definition.create({ configuration: { dataDir: dir } })
 let passed = 0
 let failed = 0
 
-function check(name, fn) {
+async function check(name, fn) {
   try {
-    fn()
+    await fn()
     passed += 1
     console.log(`  ok   ${name}`)
   } catch (error) {
@@ -32,7 +36,9 @@ function check(name, fn) {
   }
 }
 
-check('manifest：provider 契约字段与能力位', () => {
+const isThenable = (value) => value !== null && typeof value === 'object' && typeof value.then === 'function'
+
+await check('manifest：provider 契约字段与能力位', () => {
   // 契约要求 adapter.id === manifest.typeId（memory-spaces 的 assertRuntime 会校验）
   assert.equal(adapter.id, 'exp-lib')
   const manifest = definition.manifest
@@ -54,8 +60,31 @@ check('manifest：provider 契约字段与能力位', () => {
   assert.deepEqual(manifest.secrets, [])
 })
 
-check('status：空库健康，统计形状正确', () => {
-  const status = adapter.status({})
+await check('契约：数据面方法都返回 Promise（宿主 .then/.catch 直接可用）', async () => {
+  const calls = {
+    discover: () => adapter.discover({}),
+    status: () => adapter.status({}),
+    search: () => adapter.search({}, { query: '研学课' }),
+    list: () => adapter.list({}, { limit: 5 }),
+    graph: () => adapter.graph({}),
+    entityIndex: () => adapter.entityIndex({}),
+    forget: () => adapter.forget({}, 'ex_missing'),
+    remember: () => adapter.remember({}, { content: 'x' }),
+  }
+  for (const [name, call] of Object.entries(calls)) {
+    const value = call()
+    assert.equal(isThenable(value), true, `${name}() 应返回 Promise，实际是 ${Object.prototype.toString.call(value)}`)
+    await value.catch(() => undefined)
+  }
+  // 宿主 line 2853 的原样写法：同步值在这里会抛 TypeError
+  const status = await adapter.status({}).catch((error) => ({ healthy: false, error: String(error) }))
+  assert.equal(status.healthy, true)
+  // 宿主 line 3103 的原样写法：discover 必须是 thenable
+  assert.deepEqual(await adapter.discover({}), [])
+})
+
+await check('status：空库健康，统计形状正确', async () => {
+  const status = await adapter.status({})
   assert.equal(status.healthy, true)
   assert.equal(status.stats.totalInsights, 0)
   assert.equal(typeof status.stats.dbSizeBytes, 'number')
@@ -68,7 +97,7 @@ upsertExperience(seededStore, { intent: '做一个研学课PPT', action: '先定
 writeStore(dir, seededStore)
 const spaces = await adapter.discover({})
 
-check('discover：空库不返回空间；有数据时返回「经验库」', () => {
+await check('discover：空库不返回空间；有数据时返回「经验库」', () => {
   assert.deepEqual(emptySpaces, [])
   assert.equal(spaces.length, 1)
   assert.equal(spaces[0].externalId, 'exp-lib')
@@ -76,23 +105,23 @@ check('discover：空库不返回空间；有数据时返回「经验库」', ()
   assert.equal(spaces[0].description, SPACE_DESCRIPTION)
 })
 
-check('remember：拒收并提示用 exp_record', () => {
-  assert.throws(() => adapter.remember({}, { content: '随便一条' }), /exp_record/)
+await check('remember：拒收并提示用 exp_record', async () => {
+  await assert.rejects(() => adapter.remember({}, { content: '随便一条' }), /exp_record/)
 })
 
-check('search：非空查询返回 JitRL 排序结果，带 score 与提示', () => {
+await check('search：非空查询返回 JitRL 排序结果，带 score 与提示', async () => {
   const store = readStore(dir)
   upsertExperience(store, { intent: '做一个研学课PPT', action: '先排版再调色', outcome: 'partial', type: 'PPT / 课件' })
   writeStore(dir, store)
-  const out = adapter.search({}, { query: '做研学课PPT', limit: 5 })
+  const out = await adapter.search({}, { query: '做研学课PPT', limit: 5 })
   assert.ok(out.results.length >= 1)
   assert.ok(out.results[0].content.includes('PPT'))
   assert.equal(typeof out.results[0].score, 'number')
   assert.ok(out.hint.includes('JitRL'))
 })
 
-check('list：按 query 过滤，返回 Insight 形状', () => {
-  const items = adapter.list({}, { query: '研学课', limit: 10 })
+await check('list：按 query 过滤，返回 Insight 形状', async () => {
+  const items = await adapter.list({}, { query: '研学课', limit: 10 })
   assert.ok(items.length >= 1)
   for (const item of items) {
     assert.equal(typeof item.id, 'string')
@@ -102,30 +131,30 @@ check('list：按 query 过滤，返回 Insight 形状', () => {
   }
 })
 
-check('graph：节点与取代边可用', () => {
-  const graph = adapter.graph({})
+await check('graph：节点与取代边可用', async () => {
+  const graph = await adapter.graph({})
   assert.ok(graph.nodes.length >= 1)
   assert.ok(Array.isArray(graph.edges))
   assert.ok(typeof graph.generatedAt === 'string')
 })
 
-check('entityIndex：实体索引完整', () => {
-  const index = adapter.entityIndex({})
+await check('entityIndex：实体索引完整', async () => {
+  const index = await adapter.entityIndex({})
   assert.equal(index.complete, true)
   assert.ok(Array.isArray(index.memories))
 })
 
-check('forget：软删后状态与检索都排除', () => {
+await check('forget：软删后状态与检索都排除', async () => {
   const store = readStore(dir)
   const target = store.experiences.find((item) => !item.deleted_at && !item.superseded_by)
-  adapter.forget({}, target.id)
-  const after = adapter.status({})
+  await adapter.forget({}, target.id)
+  const after = await adapter.status({})
   assert.equal(after.stats.deletedInsights, 1)
-  const out = adapter.search({}, { query: '做研学课PPT', limit: 5 })
+  const out = await adapter.search({}, { query: '做研学课PPT', limit: 5 })
   assert.equal(out.results.some((item) => item.id === target.id), false)
 })
 
-check('create 时清理过期墓碑', () => {
+await check('create 时清理过期墓碑', async () => {
   const stale = readStore(dir)
   stale.experiences.push({
     id: 'ex_stale', ts: new Date().toISOString(), lastSeenAt: new Date().toISOString(), hits: 1,

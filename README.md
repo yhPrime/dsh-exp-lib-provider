@@ -74,7 +74,7 @@ dsh plugin --profile desktop add "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-pr
   - 其他 → 追加。
 - **读取**：`exp_recall(intent, limit?)` → 邻居检索 → `Â = Q̂ − V̂` → `rank_score = Â × confidence`；默认过滤已删与已被取代的旧条。
 - **通用 `remember` 被禁用**：面板不出现通用写入入口；若宿主仍调用，返回错误提示改用 `exp_record`。
-- **忘记 = 软删墓碑**：`deleted_at` 置位，保留 30 天后启动时清理；`forget` 后检索与内容页都不再显示。
+- **契约：adapter 方法一律 async**（返回 Promise）——`discover / status / search / list / graph / entityIndex / remember / forget`。memory-spaces 会把返回值直接当 Promise 用（`untilAborted(discover())`、`status().catch(...)`），同步值会报 `… is not a function`；这类坑已踩过两次（2026-10-29 的 discover 与本日的 status）。- **忘记 = 软删墓碑**：`deleted_at` 置位，保留 30 天后启动时清理；`forget` 后检索与内容页都不再显示。
 
 ## 面板能看到的
 
@@ -92,8 +92,8 @@ dsh plugin --profile desktop add "C:\Users\yh\WorkDeepSeek\插件\dsh-exp-lib-pr
 ```powershell
 cd dsh-exp-lib-provider
 node tests/store.test.mjs      # 9 项：upsert 三分支 / 墓碑 / 过滤 / 排序 / 观测
-node tests/provider.test.mjs   # 10 项：manifest / status / discover / 拒收 remember / search / graph / forget
-node tests/tools.test.mjs      # 6 项：两工具与 Provider 同一文件同一语义
+node tests/provider.test.mjs   # 11 项：manifest / Promise 契约 / status / discover / 拒收 remember / search / graph / forget
+node tests/tools.test.mjs      # 7 项：两工具与 Provider 同一文件同一语义
 ```
 
 内核（JitRL 数学）随包自带，Provider 不依赖其他插件包。

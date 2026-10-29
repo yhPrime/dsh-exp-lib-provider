@@ -19,9 +19,9 @@ const recall = tools.find((tool) => tool.name === 'exp_recall')
 let passed = 0
 let failed = 0
 
-function check(name, fn) {
+async function check(name, fn) {
   try {
-    fn()
+    await fn()
     passed += 1
     console.log(`  ok   ${name}`)
   } catch (error) {
@@ -31,7 +31,7 @@ function check(name, fn) {
   }
 }
 
-check('两个工具都注册，参数 schema 完整', () => {
+await check('两个工具都注册，参数 schema 完整', () => {
   assert.ok(record && recall)
   assert.equal(record.parameters.intent.required, true)
   assert.equal(record.parameters.action.required, true)
@@ -40,7 +40,7 @@ check('两个工具都注册，参数 schema 完整', () => {
   assert.equal(typeof recall.execute, 'function')
 })
 
-check('exp_record：首次写入 added，落盘到 exp-lib.json', () => {
+await check('exp_record：首次写入 added，落盘到 exp-lib.json', () => {
   const out = record.execute({ intent: '制作研学课六页PPT', action: '先定主题色再排版', outcome: 'success', type: 'PPT / 课件', note: '红色党政风' })
   assert.equal(out.action, 'added')
   assert.equal(out.hits, 1)
@@ -49,7 +49,7 @@ check('exp_record：首次写入 added，落盘到 exp-lib.json', () => {
   assert.ok(fs.existsSync(storeFile(dir)))
 })
 
-check('exp_record：重复写入就地更新 hits', () => {
+await check('exp_record：重复写入就地更新 hits', () => {
   const out = record.execute({ intent: '制作研学课六页PPT', action: '先定主题色再排版', outcome: 'accepted' })
   assert.equal(out.action, 'updated')
   assert.equal(out.hits, 2)
@@ -57,7 +57,7 @@ check('exp_record：重复写入就地更新 hits', () => {
   assert.equal(readStore(dir).experiences.length, 1)
 })
 
-check('exp_record：不同做法 → 新条 + 旧条 superseded', () => {
+await check('exp_record：不同做法 → 新条 + 旧条 superseded', () => {
   const out = record.execute({ intent: '制作研学课六页PPT', action: '先排版再统一调色', outcome: 'partial', type: 'PPT / 课件' })
   assert.equal(out.action, 'superseded')
   assert.ok(out.supersededId)
@@ -66,7 +66,7 @@ check('exp_record：不同做法 → 新条 + 旧条 superseded', () => {
   assert.ok(store.experiences.some((item) => item.superseded_by === out.id))
 })
 
-check('exp_recall：返回排序、过滤旧条、带证据', () => {
+await check('exp_recall：返回排序、过滤旧条、带证据', () => {
   const out = recall.execute({ intent: '制作研学课六页PPT', limit: 5 })
   assert.ok(out.candidates.length >= 1)
   assert.equal(out.candidates[0].action, '先排版再统一调色')
@@ -74,19 +74,20 @@ check('exp_recall：返回排序、过滤旧条、带证据', () => {
   assert.equal(out.candidates[0].evidence[0].intent, '制作研学课六页PPT')
 })
 
-check('exp_recall 与 Provider 读同一文件、同一语义', () => {
+await check('exp_recall 与 Provider 读同一文件、同一语义', async () => {
   const sdk = {
     apiVersion: 'dsh-mnemon.memory-space-provider/v1',
     defineMemorySpaceProviderDefinition: (definition) => definition,
   }
   const adapter = buildProvider(sdk, { dataDir: dir }).create({ configuration: { dataDir: dir } })
-  const providerResults = adapter.search({}, { query: '制作研学课六页PPT', limit: 5 }).results
+  // Provider 的 search 是 async（契约要求 Promise），这里必须 await
+  const providerResults = (await adapter.search({}, { query: '制作研学课六页PPT', limit: 5 })).results
   const toolOut = recall.execute({ intent: '制作研学课六页PPT', limit: 5 })
   assert.ok(providerResults.length >= 1)
   assert.equal(providerResults[0].id, toolOut.candidates[0].evidence[0].id)
 })
 
-check('工具跟随配置：Provider 状态里的数据目录优先于插件配置', () => {
+await check('工具跟随配置：Provider 状态里的数据目录优先于插件配置', () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-provider-state-'))
   const stateDataDir = path.join(stateDir, 'data')
   const stateFile = path.join(stateDir, 'memory-providers.json')
