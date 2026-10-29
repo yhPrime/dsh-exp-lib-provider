@@ -65,6 +65,18 @@ export function dataDirFromProviderState(config = {}) {
       files.push(path.join(root.trim(), 'state', 'memory-providers.json'))
     }
   }
+  // 兜底：从配置的数据目录往上找 `.mnemon`（宿主没把存储根传进来时也能定位到服务设置）。
+  const configuredDir = typeof config.dataDir === 'string' ? config.dataDir.trim() : ''
+  if (configuredDir !== '') {
+    let current = path.resolve(configuredDir)
+    for (let i = 0; i < 6; i += 1) {
+      const parent = path.dirname(current)
+      if (parent === current) break
+      current = parent
+      files.push(path.join(current, '.mnemon', 'state', 'memory-providers.json'))
+      files.push(path.join(current, 'state', 'memory-providers.json'))
+    }
+  }
   for (const file of files) {
     try {
       const state = JSON.parse(fs.readFileSync(file, 'utf8'))

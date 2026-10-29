@@ -171,6 +171,24 @@ await check('create 时清理过期墓碑', async () => {
   assert.equal(after, false)
 })
 
+await check('宿主没传配置时，从祖先目录 .mnemon 找到服务设置的数据目录', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-provider-root-'))
+  const expDir = path.join(root, '.exp')
+  fs.mkdirSync(path.join(root, '.mnemon', 'state'), { recursive: true })
+  fs.mkdirSync(expDir, { recursive: true })
+  fs.writeFileSync(path.join(root, '.mnemon', 'state', 'memory-providers.json'), JSON.stringify({
+    services: { 'exp-lib': { dataDir: expDir } },
+  }), 'utf8')
+  const store = readStore(expDir)
+  upsertExperience(store, { intent: '祖先目录定位测试', action: '读服务设置', outcome: 'success' })
+  writeStore(expDir, store)
+  const def2 = buildProvider(sdk, { dataDir: path.join(root, '插件', '经验库', 'provider-data') })
+  const adapter2 = def2.create({ configuration: {} })
+  const items = await adapter2.list({}, { limit: 10 })
+  assert.ok(items.some((item) => item.content.includes('祖先目录定位测试')))
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
 try {
   fs.rmSync(dir, { recursive: true, force: true })
 } catch {}

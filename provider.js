@@ -19,7 +19,7 @@ import {
   purgeTombstones,
   rankExperiences,
   readStore,
-  resolveDataDir,
+  resolveToolDataDir,
   statsOf,
   toInsight,
   writeStore,
@@ -77,32 +77,35 @@ export function buildProvider(sdk, config = {}) {
     },
     create(context = {}) {
       const merged = { ...configured, ...(context.configuration || {}) }
-      const dataDir = resolveDataDir(merged)
-      const initial = readStore(dataDir)
-      if (purgeTombstones(initial, merged.tombstoneDays, Date.now()) > 0) writeStore(dataDir, initial)
+      // 每次调用都重新解析：跟随「记忆引擎 → 经验库」里保存的数据目录（memory-providers.json），
+      // 不把路径钉死在 create 时的快照上——否则用户在面板改目录后这里会一直读旧路径。
+      const dataDirOf = () => resolveToolDataDir(merged)
+      const initial = readStore(dataDirOf())
+      if (purgeTombstones(initial, merged.tombstoneDays, Date.now()) > 0) writeStore(dataDirOf(), initial)
 
       return {
         // 契约要求：工厂返回的 adapter.id 必须等于 manifest.typeId（否则报 "factory returned undefined"）。
         id: PROVIDER_ID,
 
         async discover() {
-          const store = readStore(dataDir)
+          const store = readStore(dataDirOf())
           if (store.experiences.length === 0) return []
           return [{
             externalId: 'exp-lib',
             name: SPACE_NAME,
             description: SPACE_DESCRIPTION,
-            connection: { id: PROVIDER_ID, label: SPACE_NAME, fields: merged.dataDir ? { dataDir: merged.dataDir } : {} },
+            connection: { id: PROVIDER_ID, label: SPACE_NAME, fields: { dataDir: dataDirOf() } },
           }]
         },
 
         async status() {
-          const store = readStore(dataDir)
-          return { healthy: true, stats: statsOf(store, dataDir) }
+          const dir = dataDirOf()
+          const store = readStore(dir)
+          return { healthy: true, stats: statsOf(store, dir) }
         },
 
         async search(body, request = {}) {
-          const store = readStore(dataDir)
+          const store = readStore(dataDirOf())
           const query = String(request.query || '').trim()
           const limit = Math.max(1, Math.trunc(Number(request.limit) || 8))
           if (query === '') return { results: listInsights(store, { limit }), hint: '空查询：列出最近的可见经验' }
@@ -116,16 +119,16 @@ export function buildProvider(sdk, config = {}) {
         },
 
         async list(body, request = {}) {
-          const store = readStore(dataDir)
+          const store = readStore(dataDirOf())
           return listInsights(store, { query: request.query, limit: request.limit })
         },
 
         async graph() {
-          return graphSnapshot(readStore(dataDir))
+          return graphSnapshot(readStore(dataDirOf()))
         },
 
         async entityIndex() {
-          return entityIndex(readStore(dataDir))
+          return entityIndex(readStore(dataDirOf()))
         },
 
         async remember() {
@@ -133,9 +136,10 @@ export function buildProvider(sdk, config = {}) {
         },
 
         async forget(body, id) {
-          const store = readStore(dataDir)
+          const dir = dataDirOf()
+          const store = readStore(dir)
           if (!forgetExperience(store, id)) throw new Error(`没有这条经验：${String(id)}`)
-          writeStore(dataDir, store)
+          writeStore(dir, store)
           return { status: 'deleted', id }
         },
 

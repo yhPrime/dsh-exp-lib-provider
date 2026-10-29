@@ -106,13 +106,13 @@ Provider 卡片显示「未启用」是正常的，点右侧开关即可。
 npm test
 ```
 
-52 项全绿，细分：
+53 项全绿，细分：
 
 | 文件 | 项数 | 覆盖 |
 |---|---|---|
 | `tests/kernel.test.mjs` | 19 | JitRL 数学：相似度、V̂/Q̂、乐观估计、优势排序 |
 | `tests/store.test.mjs` | 10 | upsert 三分支 / 墓碑 TTL / 过滤 / 排序 / 数据目录跟随 |
-| `tests/provider.test.mjs` | 11 | manifest / Promise 契约 / status / discover / 拒收 remember / search / graph / forget |
+| `tests/provider.test.mjs` | 12 | manifest / Promise 契约 / status / discover / 拒收 remember / search / graph / forget |
 | `tests/tools.test.mjs` | 7 | `exp_record` / `exp_recall` 与 Provider 同一文件同一语义 |
 | `tests/plugin.test.mjs` | 5 | 插件注入、每轮提示段、启动日志 |
 
