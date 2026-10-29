@@ -62,12 +62,14 @@ check('status：空库健康，统计形状正确', () => {
   assert.ok(status.stats.byCategory)
 })
 
+const emptySpaces = await adapter.discover({})
+const seededStore = readStore(dir)
+upsertExperience(seededStore, { intent: '做一个研学课PPT', action: '先定主题色', outcome: 'success', type: 'PPT / 课件' })
+writeStore(dir, seededStore)
+const spaces = await adapter.discover({})
+
 check('discover：空库不返回空间；有数据时返回「经验库」', () => {
-  assert.deepEqual(adapter.discover({}), [])
-  const store = readStore(dir)
-  upsertExperience(store, { intent: '做一个研学课PPT', action: '先定主题色', outcome: 'success', type: 'PPT / 课件' })
-  writeStore(dir, store)
-  const spaces = adapter.discover({})
+  assert.deepEqual(emptySpaces, [])
   assert.equal(spaces.length, 1)
   assert.equal(spaces[0].externalId, 'exp-lib')
   assert.equal(spaces[0].name, SPACE_NAME)

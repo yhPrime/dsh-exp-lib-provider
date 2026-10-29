@@ -79,7 +79,7 @@ export function buildProvider(sdk, config = {}) {
         // 契约要求：工厂返回的 adapter.id 必须等于 manifest.typeId（否则报 "factory returned undefined"）。
         id: PROVIDER_ID,
 
-        discover() {
+        async discover() {
           const store = readStore(dataDir)
           if (store.experiences.length === 0) return []
           return [{
