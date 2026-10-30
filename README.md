@@ -19,7 +19,7 @@
 
 ```powershell
 # 1) 装进目标 profile（tgz 文件，或 git 仓库地址）
-dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.2.2.tgz
+dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.2.3.tgz
 ```
 
 > 为什么用 tarball 而不是目录：`dsh plugin add <目录>` 会做 pnpm link，运行时按真实路径解析依赖，宿主提供的 `dsh-mnemon-source-memory-spaces` 会找不到。tarball 装的是包副本，依赖从 profile 的 `node_modules` 解析。**改完代码要重新 pack + add 才会生效。**
@@ -55,7 +55,23 @@ dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.2.2.tgz
 2. 读不到时退回插件 `cordis.patch.yml` 里的 `dataDir`；
 3. 再退回默认 `$DSH_HOME/exp-lib/provider-data`（宿主没注入 `DSH_HOME` 时用 `~/.dsh`）。
 
-`memory-providers.json` 按顺序找：`mnemonDataDir` 配置 → `DSH_MNEMON_DATA_DIR` → `MNEMON_DATA_DIR` → profile 的 `cordis.patch.yml` 里记忆插件条目的 `dataDir` → 工作区 `.mnemon` → `~/.mnemon`。所以**记忆插件用默认或自定义存储根都能自动找到**，换机器不用重新打包，改面板里的路径即可。
+`memory-providers.json` 按顺序找：`mnemonDataDir` 配置 → `DSH_MNEMON_DATA_DIR` → `MNEMON_DATA_DIR` → profile 的 `cordis.patch.yml` 里记忆插件条目的 `dataDir`（环境变量缺省时扫 `$DSH_HOME/profiles/*`，跳过 `backup-*` 备份目录）→ 工作区 `.mnemon` → **cwd 祖先链里的 `.mnemon`** → `~/.mnemon`。所以**记忆插件用默认或自定义存储根都能自动找到**，换机器不用重新打包，改面板里的路径即可。
+
+> v0.2.3 起不再依赖 `DSH_PROFILE_DIR` / `DSH_PROFILE`：这两个变量是宿主给「模型发起的 shell」注入的，插件进程里不一定有（2026-10-30 实测：缺环境变量时工具退回默认空目录，提示层显示 0 条经验，`exp_record` 会写到错误的库）。现在环境缺省就扫 profiles 目录，再从 cwd 逐级往上找 `.mnemon`；显式给了 `mnemonDataDir` 时不做这两步猜测。
+
+## 可选：经验库卡片页脚显示「条数 / 连接 / 大小」
+
+记忆空间卡片页脚由 `dsh-mnemon-source-memory-spaces` 的客户端 bundle 渲染：只有 `origin === 'native'` 才显示「N 条记忆 / N 条连接 / 大小」，三方 Provider 一律显示「第三方本地记忆 + 数据目录」。经验库的 `status()` 本来就返回 `stats`（宿主会把 `{ ...metadata, ...status }` 合进卡片），只是客户端按 origin 分叉把它丢掉了。
+
+`tools/patch-memory-spaces-footer.mjs` 打一个单点补丁：有 `stats` 就显示统计（没有才退回类型 + 目录），并把经验库的计数文案写成「N 条经验」。脚本幂等，上游改了页脚实现时找不到锚点会**报错退出**，不会静默改错地方；写临时文件再 rename 覆盖，断开 pnpm store 硬链接（不污染全局 store），原文件备份到 `./备份/<日期>/`（可用 `EXP_PATCH_BACKUP_DIR` 指定别处）。
+
+```powershell
+node tools/patch-memory-spaces-footer.mjs --check-only    # 只报告状态
+node tools/patch-memory-spaces-footer.mjs                 # 默认 desktop profile
+node tools/patch-memory-spaces-footer.mjs --profile <名>   # 指定 profile
+```
+
+`dsh-mnemon` / memory-spaces 升级会带回未打补丁的 bundle，升级后重跑一次即可；想还原就用备份文件覆盖（同样先删再复制，别直接覆盖硬链接）。改完刷新页面；若浏览器还缓存旧 bundle，重启 DSH 一次。
 
 ## 创建空间
 
@@ -127,11 +143,11 @@ dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.2.2.tgz
 ## 测试与体检
 
 ```powershell
-npm test                          # 76 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
+npm test                          # 85 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
 node tools/audit.mjs <dataDir>    # 只读体检，有问题退出码 1
 ```
 
-**76 项全绿**：kernel 19 / recall 11 / store 14 / provider 13 / tools 7 / plugin 5 / type-tool 7。
+**85 项全绿**：kernel 19 / recall 11 / store 17 / provider 13 / tools 7 / plugin 5 / type-tool 7 / 页脚补丁 6。
 
 - `tests/kernel.test.mjs` 是**与 Python 参考实现的逐字段对拍**（fixture 由 `jitrl_memory.py` 生成）。改 kernel 的论文数学要同步改 Python 并重生成 fixture；
 - `tests/recall.test.mjs` 是 2026-10-29 加的回归面：自然短意图召回、artifact 别名归一、噪声不假召回、degenerate 降级、成败对照不被取代、写入清洗、`exp_type assign`、回报口径一致；

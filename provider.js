@@ -54,7 +54,7 @@ export function buildProvider(sdk, config = {}) {
       kind: 'provider',
       typeId: PROVIDER_ID,
       packageName: PACKAGE_NAME,
-      version: '0.2.2',
+      version: '0.2.3',
       label: SPACE_NAME,
       summary: 'JitRL 经验记忆：记录做法与结果，按优势召回。',
       origin: 'third-party',

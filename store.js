@@ -62,39 +62,70 @@ export function resolveDataDir(config = {}) {
 }
 
 /**
- * 从 profile 的 `cordis.patch.yml` 里读记忆插件（mnemon）条目的 `dataDir`。
+ * 从某个 `cordis.patch.yml` 里读出记忆插件（mnemon）条目的 `dataDir`（可能多条）。
  *
- * 记忆插件用自定义存储根时，那个路径只写在 DSH 自己的 profile 配置里；
- * 不读它，工具有时找不到 `memory-providers.json`，就会退回空目录、看起来像「库里没有经验」。
- * 只扫 `- id: mnemon` 那一块，遇到下一条顶层条目就停；读不到返回空串。
+ * 只扫 `- id: mnemon` / `- name: dsh-mnemon` 那一块，遇到下一条顶层条目就停；读不到返回空数组。
  */
-function mnemonDataDirFromProfilePatch() {
-  const candidates = []
-  const profileDir = String(process.env.DSH_PROFILE_DIR || '').trim()
-  if (profileDir !== '') candidates.push(path.join(profileDir, 'cordis.patch.yml'))
-  const profile = String(process.env.DSH_PROFILE || '').trim()
-  if (profile !== '') candidates.push(path.join(dshHome(), 'profiles', profile, 'cordis.patch.yml'))
-  for (const file of candidates) {
-    let text = ''
-    try {
-      text = fs.readFileSync(file, 'utf8')
-    } catch {
+function mnemonDataDirsFromPatchFile(file) {
+  let text = ''
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return []
+  }
+  const dirs = []
+  let inMnemon = false
+  for (const line of text.split(/\r?\n/)) {
+    if (/^-\s/u.test(line)) {
+      inMnemon = /^-\s+(?:id:\s*mnemon|name:\s*dsh-mnemon)\s*$/u.test(line)
       continue
     }
-    let inMnemon = false
-    for (const line of text.split(/\r?\n/)) {
-      if (/^-\s/u.test(line)) {
-        inMnemon = /^-\s+(?:id:\s*mnemon|name:\s*dsh-mnemon)\s*$/u.test(line)
-        continue
-      }
-      if (!inMnemon) continue
-      const match = /^\s+dataDir:\s*(.+?)\s*$/u.exec(line)
-      if (match === null) continue
-      const value = match[1].replace(/^['"]|['"]$/gu, '')
-      if (value !== '' && !value.includes('${')) return path.resolve(value.replace(/^~(?=$|[\\/])/u, os.homedir()))
+    if (!inMnemon) continue
+    const match = /^\s+dataDir:\s*(.+?)\s*$/u.exec(line)
+    if (match === null) continue
+    const value = match[1].replace(/^['"]|['"]$/gu, '')
+    if (value === '' || value.includes('${')) continue
+    const resolved = path.resolve(value.replace(/^~(?=$|[\\/])/u, os.homedir()))
+    if (!dirs.includes(resolved)) dirs.push(resolved)
+  }
+  return dirs
+}
+
+/**
+ * 记忆插件（mnemon）存储根的候选：profile 的 `cordis.patch.yml` 里 mnemon 条目的 `dataDir`。
+ *
+ * 两个来源，缺一不可：
+ *   ① 环境变量 `DSH_PROFILE_DIR` / `DSH_PROFILE` 指向的 profile；
+ *      这两个变量是宿主给「模型发起的 shell」注入的，插件代码所在进程里**不一定有**
+ *      （2026-10-30 实测：运行中的工具实例就这样退回了默认空目录）。
+ *   ② 环境缺省时扫 `$DSH_HOME/profiles/*`（跳过 `backup-*` 备份目录）。
+ *      不猜「当前是哪个 profile」——只把每个候选根都交给调用方，哪个根里真有带
+ *      `services["exp-lib"]` 的 `memory-providers.json`，就用哪个。
+ */
+function mnemonDataDirsFromProfilePatches() {
+  const files = []
+  const profileDir = String(process.env.DSH_PROFILE_DIR || '').trim()
+  if (profileDir !== '') files.push(path.join(profileDir, 'cordis.patch.yml'))
+  const profile = String(process.env.DSH_PROFILE || '').trim()
+  if (profile !== '') files.push(path.join(dshHome(), 'profiles', profile, 'cordis.patch.yml'))
+  const profilesRoot = path.join(dshHome(), 'profiles')
+  let names = []
+  try {
+    names = fs.readdirSync(profilesRoot).sort()
+  } catch {
+    names = []
+  }
+  for (const name of names) {
+    if (/^backup/iu.test(name)) continue
+    files.push(path.join(profilesRoot, name, 'cordis.patch.yml'))
+  }
+  const dirs = []
+  for (const file of files) {
+    for (const dir of mnemonDataDirsFromPatchFile(file)) {
+      if (!dirs.includes(dir)) dirs.push(dir)
     }
   }
-  return ''
+  return dirs
 }
 
 /**
@@ -103,7 +134,8 @@ function mnemonDataDirFromProfilePatch() {
  * 这是「工具跟随配置」的关键：用户在记忆引擎里改了「经验库」的数据目录，
  * 工具不需要重新打包/改 profile，直接读同一份服务设置。
  * 候选位置：显式 providerStateFile → mnemonDataDir → DSH_MNEMON_DATA_DIR → MNEMON_DATA_DIR
- * → profile 里 mnemon 配置的 dataDir → 工作区/.mnemon → 家目录/.mnemon。
+ * → profile 里 mnemon 配置的 dataDir（含扫 profiles/* 的兜底）→ 工作区/.mnemon →
+ * cwd 祖先链里的 .mnemon → 家目录/.mnemon。
  */
 export function dataDirFromProviderState(config = {}) {
   const files = []
@@ -116,13 +148,24 @@ export function dataDirFromProviderState(config = {}) {
     config.mnemonDataDir,
     process.env.DSH_MNEMON_DATA_DIR,
     process.env.MNEMON_DATA_DIR,
-    explicit ? '' : mnemonDataDirFromProfilePatch(),
+    ...(explicit ? [] : mnemonDataDirsFromProfilePatches()),
     path.join(process.cwd(), '.mnemon'),
     path.join(os.homedir(), '.mnemon'),
   ]
   for (const root of roots) {
     if (typeof root === 'string' && root.trim() !== '') {
       files.push(path.join(root.trim(), 'state', 'memory-providers.json'))
+    }
+  }
+  // 兜底：从 cwd 往上找 `.mnemon`——记忆插件存储根常在工作区根上（如 <工作区根>/.mnemon），
+  // 进程工作目录在工作区里时祖先链就能命中，不依赖宿主注入环境变量。
+  if (!explicit) {
+    let current = path.resolve(process.cwd())
+    for (let i = 0; i < 8; i += 1) {
+      files.push(path.join(current, '.mnemon', 'state', 'memory-providers.json'))
+      const parent = path.dirname(current)
+      if (parent === current) break
+      current = parent
     }
   }
   // 兜底：从配置的数据目录往上找 `.mnemon`（宿主没把存储根传进来时也能定位到服务设置）。
@@ -137,7 +180,7 @@ export function dataDirFromProviderState(config = {}) {
       files.push(path.join(current, 'state', 'memory-providers.json'))
     }
   }
-  for (const file of files) {
+  for (const file of new Set(files)) {
     try {
       const state = JSON.parse(fs.readFileSync(file, 'utf8'))
       const dir = state && state.services && state.services['exp-lib'] && state.services['exp-lib'].dataDir

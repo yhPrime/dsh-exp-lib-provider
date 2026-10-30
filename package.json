@@ -1,6 +1,6 @@
 {
   "name": "dsh-exp-lib-provider",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "经验库的记忆空间 Provider（后端），同时作为 DSH 插件注册 exp_recall / exp_record / exp_type 工具。",
   "type": "module",
   "main": "index.js",
@@ -21,11 +21,12 @@
     "kernel.js",
     "retrieval.js",
     "tools/audit.mjs",
+    "tools/patch-memory-spaces-footer.mjs",
     "cordis.patch.yml",
     "README.md"
   ],
   "scripts": {
-    "test": "node tests/kernel.test.mjs && node tests/recall.test.mjs && node tests/store.test.mjs && node tests/provider.test.mjs && node tests/tools.test.mjs && node tests/plugin.test.mjs && node tests/type-tool.test.mjs",
+    "test": "node tests/kernel.test.mjs && node tests/recall.test.mjs && node tests/store.test.mjs && node tests/provider.test.mjs && node tests/tools.test.mjs && node tests/plugin.test.mjs && node tests/type-tool.test.mjs && node tests/patch-memory-spaces-footer.test.mjs",
     "audit": "node tools/audit.mjs"
   },
   "dsh": {
