@@ -66,6 +66,20 @@ function main() {
   }
   console.log(`  业务类型 ${userTypes.length}/24${emptyTypes.length > 0 ? `｜0 条的类型：${emptyTypes.join('、')}` : ''}`)
 
+  /* ---- 1b. 簇一致性（cluster 是 type 的派生视图，两者必须对齐） ---- */
+  const clusters = Array.isArray(store.clusters) ? store.clusters : []
+  const clusterSum = clusters.reduce((sum, cluster) => sum + (Number(cluster.stats && cluster.stats.count) || 0), 0)
+  const orphan = active.filter((item) => !store.types.some((type) => type.id === item.typeId))
+  const emptyClusters = clusters.filter((cluster) => (Number(cluster.stats && cluster.stats.count) || 0) === 0 && cluster.system !== true)
+  const blankSignature = clusters.filter((cluster) => (Number(cluster.stats && cluster.stats.count) || 0) > 0
+    && (cluster.signature.artifacts.length + cluster.signature.tokens.length + cluster.signature.cgrams.length) === 0)
+  console.log('\n[簇一致性]')
+  console.log(`  簇 ${clusters.length}（类型 ${store.types.length}）｜归属合计 ${clusterSum}（可见 ${active.length}）｜空簇 ${emptyClusters.length}`)
+  if (clusters.length !== store.types.length) fails.push(`簇数 ${clusters.length} 与类型数 ${store.types.length} 不一致`)
+  if (clusterSum !== active.length) fails.push(`簇归属合计 ${clusterSum} ≠ 可见经验 ${active.length}（有经验没归入任何簇）`)
+  if (orphan.length > 0) fails.push(`${orphan.length} 条经验的 typeId 不在类型表里（${orphan.slice(0, 3).map((item) => item.id).join('、')}）`)
+  if (blankSignature.length > 0) warns.push(`有 ${blankSignature.length} 个簇签名全空（intent/action 太短？）`)
+
   /* ---- 2. 回报分布 ---- */
   const Gs = active.map((item) => Number(item.G) || 0)
   const get = (n) => active.filter((item) => item.outcome === n).length

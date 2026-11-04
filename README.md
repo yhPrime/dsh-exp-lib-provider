@@ -19,7 +19,7 @@
 
 ```powershell
 # 1) 装进目标 profile（tgz 文件，或 git 仓库地址）
-dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.2.3.tgz
+dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.3.0.tgz
 ```
 
 > 为什么用 tarball 而不是目录：`dsh plugin add <目录>` 会做 pnpm link，运行时按真实路径解析依赖，宿主提供的 `dsh-mnemon-source-memory-spaces` 会找不到。tarball 装的是包副本，依赖从 profile 的 `node_modules` 解析。**改完代码要重新 pack + add 才会生效。**
@@ -140,25 +140,40 @@ node tools/patch-memory-spaces-footer.mjs --profile <名>   # 指定 profile
 | 记忆空间 → 图谱 | 经验节点 + 「取代」边 |
 | 删除 | 软删（可恢复；TTL 后物理清理） |
 
+## 分簇路由（0.3.0）
+
+经验按「簇」组织：簇是类型（`type`）的派生视图，带经验聚合出的签名（产物 / 高频词 / 中文二元组）与统计（条数、成败、最近使用）。`exp_recall` 默认先做**确定性簇路由**：用当前意图与各簇身份（手写描述声明的产物 + 经验主产物）算相似度，过门槛就只在主簇（+ 得分 ≥0.7×主簇的次簇）里检索，否则回退全库。
+
+- 不调 LLM、不增加模型调用：路由是本地纯函数。依据 arXiv:2610.38796 §C.2——对自带相似度检索的记忆系统加 LLM 路由，奖励无一致提升、成本反而 +8–29%。
+- 返回新增 `brief`（≤300 字符记忆简报：簇名、条数、成功率、一条做法、一条反例）与 `route`（命中的簇、分数、是否回退）；候选 `note` 展示截断 300 字符（保首尾，数据不删）。
+- `exp_record` 没给类型时按同一路由自动归族；落不进任何簇就保持「未分类」。
+- 配置（插件 config）：`routing: 'on' | 'shadow' | 'off'`（默认 `on`；`shadow` 只附路由信息、不改召回；`off` 等于 v0.2.3 行为）、`autoAssign: false` 关闭写入自动归族。
+- 门槛与标定集：`tests/fixtures/labeled-intents.json`（45 条）。`node tools/eval-routing.mjs` 复跑：当前 hit@1 82.2%、误路由 0、回退类 11/11 全对。
+
+实测（本机 32 条可见经验）：单次 `exp_recall` 输出 P50 从 6.8K 字符降到 3.7K；12 条自然意图里 8 条被路由收窄、4 条正确回退。
+
 ## 测试与体检
 
 ```powershell
-npm test                          # 85 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
+npm test                          # 106 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
 node tools/audit.mjs <dataDir>    # 只读体检，有问题退出码 1
+node tools/eval-routing.mjs       # 路由标定集评估：hit@1 / 误路由 / 回退正确率
 ```
 
-**85 项全绿**：kernel 19 / recall 11 / store 17 / provider 13 / tools 7 / plugin 5 / type-tool 7 / 页脚补丁 6。
+**106 项全绿**：kernel 19 / recall 11 / store 17 / cluster 21 / provider 13 / tools 7 / plugin 5 / type-tool 7 / 页脚补丁 6。
 
 - `tests/kernel.test.mjs` 是**与 Python 参考实现的逐字段对拍**（fixture 由 `jitrl_memory.py` 生成）。改 kernel 的论文数学要同步改 Python 并重生成 fixture；
 - `tests/recall.test.mjs` 是 2026-10-29 加的回归面：自然短意图召回、artifact 别名归一、噪声不假召回、degenerate 降级、成败对照不被取代、写入清洗、`exp_type assign`、回报口径一致；
-- `tools/audit.mjs` 把「靠人读召回输出」换成指标：类型分布、G 分布、负样本数、对照覆盖、工具残渣、固定 12 条意图的召回率。
+- `tests/cluster.test.mjs` 是 2026-11-03 加的簇派生视图测试：归属、签名聚合、统计口径、不落盘、类型管理联动、路由门槛与回退；
+- `tools/audit.mjs` 把「靠人读召回输出」换成指标：类型分布、簇一致性、G 分布、负样本数、对照覆盖、工具残渣、固定 12 条意图的召回率。
 
 内核（JitRL 数学）随包自带，Provider 不依赖其他插件包。
 
 ## 边界
 
 - 只做**一个空间**：所有数据写同一个 `exp-lib.json`；多空间共用会混在一起。
+- 簇是**派生视图**，不落盘：`exp-lib.json` 结构不变（还是 `{version, types[], experiences[]}`），回滚只需 `routing: 'off'`（或删 `cluster.js`）。
 - 没有单条「改内容」入口（协议没有 update）：改类型用 `exp_type assign`，改内容 = 再记一次（就地更新或取代）。
-- `kernel.js` 与 `jitrl_memory.py` 保持逐字段对拍；**召回层 v2 在 `retrieval.js`**，只改「谁算邻居、相似度怎么算」，不需要动 Python 参考实现。
-- 没有成败对照时，排序只能按证据强度，不能分辨「哪种打法更好」——这是数据问题，不是代码能绕过的；提示层和 `exp_record` 的回执都会提醒记负样本。
+- `kernel.js` 与 `jitrl_memory.py` 保持逐字段对拍；**召回层 v2 在 `retrieval.js`**，只改「谁算邻居、相似度怎么算」，不需要动 Python 参考实现。分簇只改变「谁进邻居集」，不改 V̂ / Q̂ / Â 的数学。
+- 没有成败对照时，排序只能按证据强度，不能分辨「哪种打法更好」——这是数据问题，不是代码能绕过的；分簇也改善不了它（簇内 support 只会更少），提示层和 `exp_record` 的回执都会提醒记负样本。
 - `dataDir` 默认落在 `$DSH_HOME` 下；想放工作台内便于 Git 与备份，在记忆引擎里改一次即可，插件不强制位置。

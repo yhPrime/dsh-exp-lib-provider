@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto'
 // 内核随包自带（与 dsh-exp-lib-source/kernel.js 同源），Provider 不依赖别的插件包。
 import { OUTCOME_SCORES, abstractState, estimateAdvantages, stateSimilarity, tokenize } from './kernel.js'
 import { RECALL_MIN_SIMILARITY, retrieveV2 } from './retrieval.js'
+import { ensureClusters, refreshClusters, routeCluster, buildBrief } from './cluster.js'
 
 /** 只有系统兜底类型；业务类型不再预设，由模型在记录时按需创建（带防膨胀限制）。 */
 export const SYSTEM_TYPE = Object.freeze({
@@ -205,14 +206,18 @@ export function storeFile(dataDir) {
 
 export function readStore(dataDir) {
   const file = storeFile(dataDir)
+  let store
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
     const types = (Array.isArray(raw.types) && raw.types.length > 0 ? raw.types : [{ ...SYSTEM_TYPE }]).map((type) => (type && type.id === SYSTEM_TYPE.id ? { ...type, system: true } : type))
     const experiences = Array.isArray(raw.experiences) ? raw.experiences.filter((item) => item && typeof item === 'object') : []
-    return { version: Number(raw.version) || 1, types, experiences }
+    store = { version: Number(raw.version) || 1, types, experiences }
   } catch {
-    return { version: 1, types: [{ ...SYSTEM_TYPE }], experiences: [] }
+    store = { version: 1, types: [{ ...SYSTEM_TYPE }], experiences: [] }
   }
+  // 簇是派生视图：每次读都从 types + 可见经验重算，不落盘（writeStore 只写固定字段）。
+  ensureClusters(store)
+  return store
 }
 
 export function writeStore(dataDir, store) {
@@ -343,6 +348,7 @@ export function resolveTypeForRecord(store, rawName, options = {}) {
     source: 'model-created',
   }
   store.types.push(type)
+  refreshClusters(store)
   return { type, created: true }
 }
 
@@ -396,6 +402,17 @@ export function extractParameter(raw, name) {
 
 function round4(value) {
   return Math.round(Number(value) * 1e4) / 1e4
+}
+
+/** 召回展示用的 note 上限：只截展示、不删数据；保首尾，长路径/命令不至于被切在开头。 */
+export const RECALL_NOTE_LIMIT = 300
+
+function truncateNote(raw) {
+  const text = String(raw || '')
+  if (text.length <= RECALL_NOTE_LIMIT) return text
+  const head = Math.floor(RECALL_NOTE_LIMIT * 0.65)
+  const tail = RECALL_NOTE_LIMIT - head - 1
+  return `${text.slice(0, head)}…${text.slice(-tail)}`
 }
 
 /** 证据质量：(加权平均 G + 1) / 2，映射到 [0,1]，负回报会被压到 0.2 以下。 */
@@ -473,6 +490,7 @@ export function upsertExperience(store, input, options = {}) {
       duplicate.typeId = type.id
       duplicate.typeName = type.name
     }
+    refreshClusters(store)
     return { experience: duplicate, action: 'updated', type: resolved, sanitized, typeRecoveredFromNote: recoveredType !== '' }
   }
 
@@ -508,6 +526,7 @@ export function upsertExperience(store, input, options = {}) {
     replaceTarget.superseded_by = experience.id
   }
   store.experiences.push(experience)
+  refreshClusters(store)
   return { experience, action: replaceTarget === undefined ? 'added' : 'superseded', supersededId: replaceTarget === undefined ? undefined : replaceTarget.id, type: resolved, sanitized, typeRecoveredFromNote: recoveredType !== '' }
 }
 
@@ -517,6 +536,7 @@ export function forgetExperience(store, id) {
   if (experience === undefined) return false
   if (experience.deleted_at) return true
   experience.deleted_at = new Date().toISOString()
+  refreshClusters(store)
   return true
 }
 
@@ -529,7 +549,9 @@ export function purgeTombstones(store, tombstoneDays = DEFAULT_TOMBSTONE_DAYS, n
     const deletedAt = Date.parse(item.deleted_at)
     return Number.isFinite(deletedAt) ? now - deletedAt < ttl : true
   })
-  return before - store.experiences.length
+  const removed = before - store.experiences.length
+  if (removed > 0) refreshClusters(store)
+  return removed
 }
 
 /** 可见经验（未删、未被取代）。 */
@@ -553,13 +575,45 @@ export function visibleExperiences(store, options = {}) {
  */
 export function rankExperiences(store, intent, limit = 8, options = {}) {
   const experiences = visibleExperiences(store, options)
+  const routingMode = ['off', 'shadow', 'on'].includes(String(options.routing || '').toLowerCase())
+    ? String(options.routing).toLowerCase()
+    : 'off'
+  // off：完全维持 v0.2.3 行为（G0 基线）；shadow：只附路由信息；on：簇内召回。
+  const manualCluster = options.clusterId === undefined || options.clusterId === null || options.clusterId === ''
+    ? null
+    : (store.types || []).find((type) => type.id === options.clusterId) || null
+  const route = routingMode === 'off'
+    ? null
+    : (manualCluster !== null
+      ? { clusterId: manualCluster.id, name: manualCluster.name, score: 1, fallback: false, candidates: [] }
+      : routeCluster(store, intent))
+  const attach = (payload) => {
+    if (route === null) return payload
+    payload.route = route
+    payload.brief = buildBrief(store, route, payload.candidates || [])
+    return payload
+  }
   if (experiences.length === 0) {
-    return { intent, V: 0, neighbor_count: 0, mode: 'evidence', degenerate: true, note: '经验库没有可见条目。', candidates: [] }
+    return attach({ intent, V: 0, neighbor_count: 0, mode: 'evidence', degenerate: true, note: '经验库没有可见条目。', candidates: [] })
   }
   const k = Math.max(1, Math.trunc(Number(limit) || 8))
-  const neighbors = retrieveV2(experiences, intent, { k, minSimilarity: options.minSimilarity })
-  const result = estimateAdvantages(experiences, intent, { k, neighbors })
-  const byId = new Map(experiences.map((item) => [item.id, item]))
+  // on 模式：主簇 + 次簇（分 ≥0.7×主簇）优先；合起来不足 3 条仍用全库，避免小簇丢召回。
+  let pool = experiences
+  if (routingMode === 'on' && route !== null && !route.fallback) {
+    const primary = experiences.filter((item) => item.typeId === route.clusterId)
+    const secondary = (route.candidates || [])[1]
+    const secondaryRows = secondary !== undefined && secondary.clusterId !== route.clusterId && secondary.score >= route.score * 0.7
+      ? experiences.filter((item) => item.typeId === secondary.clusterId)
+      : []
+    const merged = [...primary, ...secondaryRows]
+    if (merged.length >= 3) pool = merged
+  }
+  const narrowed = routingMode === 'on' && route !== null && !route.fallback && pool !== experiences
+  // 簇内召回不必再吐 8 条：主簇 3 + 次簇 1 是方案定下的配额（论文一个任务只用一个簇，我们放宽到主+次）。
+  const effectiveK = narrowed ? Math.min(k, 4) : k
+  const neighbors = retrieveV2(pool, intent, { k: effectiveK, minSimilarity: options.minSimilarity })
+  const result = estimateAdvantages(pool, intent, { k: effectiveK, neighbors })
+  const byId = new Map(pool.map((item) => [item.id, item]))
   const candidates = result.candidates.map((candidate) => {
     const row = byId.get((candidate.evidence[0] || {}).id) || null
     return {
@@ -579,7 +633,7 @@ export function rankExperiences(store, intent, limit = 8, options = {}) {
           action: experience ? experience.action : evidence.action,
           outcome: evidence.outcome,
           G: evidence.G,
-          note: evidence.note,
+          note: truncateNote(evidence.note),
           similarity: evidence.similarity,
           typeName: experience ? experience.typeName : '',
         }
@@ -612,7 +666,7 @@ export function rankExperiences(store, intent, limit = 8, options = {}) {
     note = `按 JitRL 优势排序（Â=Q̂−V̂，乘置信度；advantage 极差 ${spread}）。`
   }
 
-  return {
+  return attach({
     intent,
     V: result.V,
     neighbor_count: result.neighbor_count,
@@ -621,7 +675,7 @@ export function rankExperiences(store, intent, limit = 8, options = {}) {
     advantage_spread: spread,
     note,
     candidates,
-  }
+  })
 }
 
 /** Insight 视图：给 Provider 的 list / search / graph 用。所有字段都必须是 JSON 值（不能出现 undefined）。 */
@@ -758,6 +812,7 @@ export function renameType(store, nameOrId, rawNewName, description) {
   for (const item of store.experiences) {
     if (item.typeId === type.id) item.typeName = newName
   }
+  refreshClusters(store)
   return { type, oldName }
 }
 
@@ -783,6 +838,7 @@ export function mergeTypes(store, names, rawTargetName, description) {
     }
   }
   store.types = store.types.filter((type) => !sourceIds.has(type.id))
+  refreshClusters(store)
   return { target: target.name, targetId: target.id, moved, removed: sourceIds.size }
 }
 
@@ -800,6 +856,7 @@ export function deleteType(store, nameOrId) {
     }
   }
   store.types = store.types.filter((item) => item.id !== type.id)
+  refreshClusters(store)
   return { deleted: type.name, moved }
 }
 
@@ -821,6 +878,7 @@ export function assignType(store, id, nameOrId) {
   const from = experience.typeName || SYSTEM_TYPE.name
   experience.typeId = type.id
   experience.typeName = type.name
+  refreshClusters(store)
   return { id: experience.id, from, to: type.name, typeId: type.id, changed: from !== type.name }
 }
 
@@ -835,10 +893,12 @@ export function renderHint(config = {}, maxCharacters = 900) {
   const active = store.experiences.filter((item) => !item.deleted_at && !item.superseded_by).length
   const userTypes = store.types.filter((type) => type.system !== true && type.id !== SYSTEM_TYPE.id)
   const maxTypes = Math.max(1, Math.trunc(Number(config.maxTypes) || DEFAULT_MAX_TYPES))
+  const clusters = Array.isArray(store.clusters) ? store.clusters : []
+  const nonEmptyClusters = clusters.filter((cluster) => (Number(cluster.stats && cluster.stats.count) || 0) > 0).length
   const lines = [
     "【经验库】接同类任务前用 exp_recall(intent) 查历史做法（看 mode：advantage=有成败对照按 Â 排序；evidence=无对照按证据强度，Â 不具区分度）。做完用 exp_record 记：成功/失败/被纠正都要记，负样本才让排序有信息量；同一意图换做法时复用同一 intent 才有对照。类型用 exp_type 管（含 assign 改单条类型）。",
-    `当前 ${active} 条经验；类型 ${userTypes.length}/${maxTypes}。类型不预设：记经验时可给新类型名（会自动建，但会先做近似合并，泛化名归「未分类」）。`,
-    "类型（名称用于识别；描述越具体，写入与召回越准）：",
+    `当前 ${active} 条经验；类型 ${userTypes.length}/${maxTypes}；簇 ${nonEmptyClusters}/${clusters.length}（有经验/全部）。召回先按簇路由，无同族回退全库。`,
+    "类型/簇（名称用于识别；描述越具体，写入与召回越准）：",
   ]
   for (const type of store.types) {
     const description = String(type.description || "").replace(/\s+/g, " ").trim()

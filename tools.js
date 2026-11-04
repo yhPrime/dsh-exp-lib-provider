@@ -9,6 +9,7 @@ import {
   assignType,
   createType,
   deleteType,
+  findType,
   listTypes,
   mergeTypes,
   rankExperiences,
@@ -19,6 +20,7 @@ import {
   upsertExperience,
   writeStore,
 } from './store.js'
+import { routeCluster } from './cluster.js'
 
 const OUTPUT_SCHEMA = { type: 'object', additionalProperties: true }
 
@@ -49,11 +51,22 @@ export function buildTools(defineTool, config = {}) {
     execute(args = {}) {
       const dataDir = dataDirOf()
       const store = readStore(dataDir)
+      // 没给类型时按簇路由自动归族（config.routing='off' 或 autoAssign=false 可关）；落不进任何簇就保持「未分类」。
+      const autoAssign = config.autoAssign !== false && config.routing !== 'off'
+      let typeName = args.type
+      let routedCluster = null
+      if ((typeName === undefined || typeName === null || String(typeName).trim() === '') && autoAssign) {
+        const route = routeCluster(store, String(args.intent || ''))
+        if (!route.fallback) {
+          typeName = route.name
+          routedCluster = { clusterId: route.clusterId, name: route.name, score: route.score }
+        }
+      }
       const result = upsertExperience(store, {
         intent: args.intent,
         action: args.action,
         outcome: args.outcome,
-        type: args.type,
+        type: typeName,
         typeDescription: args.typeDescription,
         note: args.note,
       }, {
@@ -80,6 +93,8 @@ export function buildTools(defineTool, config = {}) {
         typeWarning: typeInfo.rejected ? `${typeInfo.reason}（已归「未分类」）` : null,
         typeRecoveredFromNote: result.typeRecoveredFromNote === true,
         noteSanitized: sanitized.note === true || sanitized.intent === true || sanitized.action === true,
+        clusterName: result.experience.typeName,
+        routedCluster,
         typeCount: store.types.filter((type) => type.system !== true && type.id !== 'ty_other').length,
         typeLimit: Math.max(1, Math.trunc(Number(config.maxTypes) || 24)),
         supersededId: result.supersededId || null,
@@ -94,16 +109,27 @@ export function buildTools(defineTool, config = {}) {
 
   const recall = defineTool({
     name: 'exp_recall',
-    description: '按任务意图召回历史经验。mode=advantage：按 JitRL 优势排序（Â = Q̂ − V̂，乘置信度）；mode=evidence：样本无成败对照，Â 不具区分度，改按相似度×证据强度排序（见 note）。返回做法与证据。',
+    description: '按任务意图召回历史经验。默认先做簇路由（确定性的簇内检索，无同族回退全库）；返回 brief（记忆简报）、route（路由结果）与 candidates。mode=advantage：按 JitRL 优势排序；mode=evidence：无成败对照，Â 不具区分度，改按相似度×证据强度排序。',
     parameters: {
       intent: { type: 'string', required: true, description: '当前任务意图。' },
       limit: { type: 'number', description: '返回几条候选做法，默认 8。' },
+      cluster: { type: 'string', description: '可选：直接指定簇（类型名或 id），跳过路由。' },
+      all: { type: 'boolean', description: '可选：强制全库检索，忽略路由。' },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     execute(args = {}) {
       const dataDir = dataDirOf()
       const store = readStore(dataDir)
-      return rankExperiences(store, String(args.intent || ''), args.limit || 8)
+      const routing = args.all === true
+        ? 'off'
+        : (config.routing === 'shadow' ? 'shadow' : config.routing === 'off' ? 'off' : 'on')
+      let clusterId
+      if (args.cluster !== undefined && args.cluster !== null && String(args.cluster).trim() !== '') {
+        const type = findType(store.types, String(args.cluster))
+        if (type === null) throw new Error(`没有这个簇：${String(args.cluster)}（用 exp_type list 看现有类型）`)
+        clusterId = type.id
+      }
+      return rankExperiences(store, String(args.intent || ''), args.limit || 8, { routing, clusterId })
     },
   })
 
