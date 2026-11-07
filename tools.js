@@ -1,11 +1,13 @@
 /**
- * 工具面：exp_record / exp_recall。
+ * 工具面：exp_record / exp_recall / exp_feedback / exp_type。
  *
  * 同一份数据、同一套语义；写入只走 exp_record（Provider 的通用 remember 被禁用）。
  * SDK 由 index.js 注入，测试用桩。
  */
 
 import {
+  FEEDBACK_ETA,
+  applyFeedback,
   assignType,
   createType,
   deleteType,
@@ -133,6 +135,36 @@ export function buildTools(defineTool, config = {}) {
     },
   })
 
+  const feedback = defineTool({
+    name: 'exp_feedback',
+    description: '用过一条召回的经验之后回报结果：helped（靠它做成了）/ hurt（用了反而返工、被纠正或没帮上）/ neutral（用了但没影响）。反馈按 EMA 修正该条的回报 G（排序依据），不动 hits、不新建条目、不改 outcome；下次召回按新回报排序。',
+    parameters: {
+      id: { type: 'string', required: true, description: '经验 id（exp_recall 结果里 evidence[].id）。' },
+      result: { type: 'string', enum: ['helped', 'hurt', 'neutral'], required: true, description: '用后结果：helped / hurt / neutral。' },
+      intent: { type: 'string', description: '可选：当时任务的意图（只进审计日志，不动经验内容）。' },
+      note: { type: 'string', description: '可选：怎么用的、结果如何（≤200 字，只进审计日志）。' },
+    },
+    output: { schema: OUTPUT_SCHEMA, render: renderJson },
+    execute(args = {}) {
+      const dataDir = dataDirOf()
+      const store = readStore(dataDir)
+      const result = applyFeedback(store, args.id, { result: args.result, intent: args.intent, note: args.note }, { eta: config.feedbackEta })
+      writeStore(dataDir, store)
+      const active = store.experiences.filter((item) => !item.deleted_at && !item.superseded_by)
+      const covered = active.filter((item) => item.feedback !== null && typeof item.feedback === 'object'
+        && (Number(item.feedback.helped) || 0) + (Number(item.feedback.hurt) || 0) + (Number(item.feedback.neutral) || 0) > 0).length
+      return {
+        action: 'feedback',
+        ...result,
+        hint: result.result === 'neutral'
+          ? 'neutral 只计数，G 不变（没有证据说明这条更有效或更差）。'
+          : `G ${result.G_before} → ${result.G_after}（EMA η=${FEEDBACK_ETA}）：下次召回按新回报排序；outcome 仍记的是首次结果。`,
+        feedbackCovered: covered,
+        count: active.length,
+      }
+    },
+  })
+
   const typeTool = defineTool({
     name: 'exp_type',
     description: '管理经验类型：list 列表（含条数）/ create 新建 / rename 改名 / merge 合并（经验批量改挂，源类型删除）/ delete 删除（经验归「未分类」）/ assign 把单条经验改挂到指定类型（定点修脏数据，不动 hits）。',
@@ -174,7 +206,7 @@ export function buildTools(defineTool, config = {}) {
     },
   })
 
-  return [record, recall, typeTool]
+  return [record, recall, feedback, typeTool]
 }
 
 /** 供外部（如管理/调试）复用的回报推断。 */

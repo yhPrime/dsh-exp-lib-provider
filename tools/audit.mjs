@@ -88,6 +88,11 @@ function main() {
   console.log(`  accepted ${get('accepted')}｜success ${get('success')}｜partial ${get('partial')}｜unknown ${get('unknown')}`)
   console.log(`  failed ${get('failed')}｜corrected ${get('corrected')}｜aborted ${get('aborted')}`)
   console.log(`  G 区间 ${Gs.length ? Math.min(...Gs).toFixed(2) : '-'} .. ${Gs.length ? Math.max(...Gs).toFixed(2) : '-'}｜负样本 ${negatives}`)
+  const withFeedback = active.filter((item) => item.feedback !== null && typeof item.feedback === 'object'
+    && (Number(item.feedback.helped) || 0) + (Number(item.feedback.hurt) || 0) + (Number(item.feedback.neutral) || 0) > 0)
+  const sumFeedback = (key) => withFeedback.reduce((total, item) => total + (Number(item.feedback[key]) || 0), 0)
+  const feedbackRewritten = active.filter((item) => item.GSource === 'feedback').length
+  console.log(`  用后反馈：${withFeedback.length} 条｜helped ${sumFeedback('helped')}｜hurt ${sumFeedback('hurt')}｜neutral ${sumFeedback('neutral')}｜G 被反馈改写过 ${feedbackRewritten}`)
   if (active.length >= 4 && negatives === 0) warns.push('没有失败/纠正样本：召回会退化到 mode=evidence（Â 不具区分度）')
 
   /* ---- 3. 对照覆盖 ---- */

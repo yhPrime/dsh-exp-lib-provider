@@ -1,5 +1,5 @@
 /**
- * DSH 插件入口（可安装/开启/禁用）：只注册两个工具。
+ * DSH 插件入口（可安装/开启/禁用）：注册工具面（exp_record / exp_recall / exp_feedback / exp_type）。
  *
  * Provider 本身由 memory-spaces 作为子 Fiber 挂载（在「记忆引擎 → Provider」里开关）；
  * 这个入口让本包同时是一个普通的 DSH 插件，出现在插件管理里，可整体启停工具面。

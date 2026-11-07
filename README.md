@@ -10,12 +10,12 @@
 | 形态 | 本地 Provider（`locality: local`，`workspaceBinding: optional-override`） |
 | 能力 | search / browse / graph / entities / forget；**remember: false**；`writeMode: exact`、`deletionMode: soft` |
 | 配置字段 | `dataDir`（可选，默认 `$DSH_HOME/exp-lib/provider-data`，支持 `~` 开头；一般不用配，跟随记忆引擎里的设置） |
-| 工具 | `exp_record`、`exp_recall`、`exp_type`（与本 Provider 共用同一份数据） |
+| 工具 | `exp_record`、`exp_recall`、`exp_feedback`、`exp_type`（与本 Provider 共用同一份数据） |
 | 数据 | `<dataDir>/exp-lib.json`：`{ version, types[], experiences[] }` |
 
 ## 安装
 
-前置：DSH 里已装 `dsh-mnemon`（记忆插件）。本包是它的记忆空间 Provider，同时也自己注册三个工具，所以装法是「普通插件」+「挂一次 Provider」。
+前置：DSH 里已装 `dsh-mnemon`（记忆插件）。本包是它的记忆空间 Provider，同时也自己注册四个工具，所以装法是「普通插件」+「挂一次 Provider」。
 
 ```powershell
 # 1) 装进目标 profile（tgz 文件，或 git 仓库地址）
@@ -24,7 +24,7 @@ dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.3.0.tgz
 
 > 为什么用 tarball 而不是目录：`dsh plugin add <目录>` 会做 pnpm link，运行时按真实路径解析依赖，宿主提供的 `dsh-mnemon-source-memory-spaces` 会找不到。tarball 装的是包副本，依赖从 profile 的 `node_modules` 解析。**改完代码要重新 pack + add 才会生效。**
 
-2) 在插件管理里启用 `dsh-exp-lib-provider`。`dsh plugin add` 只是转发 pnpm，不会把包写进 `dsh.profile.bundles`；没启用的话三个工具和每轮提示段都不会出现。
+2) 在插件管理里启用 `dsh-exp-lib-provider`。`dsh plugin add` 只是转发 pnpm，不会把包写进 `dsh.profile.bundles`；没启用的话四个工具和每轮提示段都不会出现。
 
 3) 把 Provider 挂进 memory-spaces（一次性；改前备份 profile 的 `cordis.patch.yml`）。在已有的 `- id: mnemon-source-memory-spaces` 条目里，给 `providers` 列表末尾补一条：
 
@@ -42,7 +42,7 @@ dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.3.0.tgz
 
 | 层 | 位置 | 控制什么 |
 |---|---|---|
-| **DSH 插件** | 插件管理（bundles 里能看到 `dsh-exp-lib-provider`） | 工具面：`exp_recall` / `exp_record` / `exp_type` 是否可用 |
+| **DSH 插件** | 插件管理（bundles 里能看到 `dsh-exp-lib-provider`） | 工具面：`exp_recall` / `exp_record` / `exp_feedback` / `exp_type` 是否可用 |
 | **记忆 Provider** | 记忆引擎 → Provider 列表里的「经验库」 | 存储/空间：这个 Provider 是否参与记忆空间 |
 
 装好后两处都要开：插件管理里启用插件；记忆引擎里把「经验库」的开关打开。Provider 卡片显示「未启用」是正常的，点右侧开关即可。
@@ -83,7 +83,7 @@ node tools/patch-memory-spaces-footer.mjs --profile <名>   # 指定 profile
 
 ## 每轮提示层
 
-插件启用时会向系统提示追加一段有界文本（`order: 160`）：类型目录 + 用法提示（`exp_recall` / `exp_record` / `exp_type`）。提示里明确要求「成功/失败/被纠正都要记，同一意图换做法时复用同一 intent」，否则库里只有成功样本、排序永远没有区分度。内容每轮动态读当前数据文件，条数会跟着变；`config.hint: false` 可关掉。它不经过记忆组合（不需要 scoped 策略），**禁用插件即消失**。
+插件启用时会向系统提示追加一段有界文本（`order: 160`）：类型目录 + 用法提示（`exp_recall` / `exp_record` / `exp_feedback` / `exp_type`），并明确「用过某条之后报 helped/hurt」。提示里明确要求「成功/失败/被纠正都要记，同一意图换做法时复用同一 intent」，否则库里只有成功样本、排序永远没有区分度。内容每轮动态读当前数据文件，条数会跟着变；`config.hint: false` 可关掉。它不经过记忆组合（不需要 scoped 策略），**禁用插件即消失**。
 
 ## 类型：不预设，按需创建 + 四道限制
 
@@ -140,6 +140,22 @@ node tools/patch-memory-spaces-footer.mjs --profile <名>   # 指定 profile
 | 记忆空间 → 图谱 | 经验节点 + 「取代」边 |
 | 删除 | 软删（可恢复；TTL 后物理清理） |
 
+## 用后反馈（0.4.0）
+
+召回给出的是「参考」，用过之后到底帮没帮上，只有用完才知道。`exp_feedback(id, result)` 补上这一段闭环：
+
+| result | 含义 | 对 G 的影响 |
+|---|---|---|
+| `helped` | 靠它做成了 | 按 EMA 上调（G=0.8 一次 → 0.87，多次趋近 1.0） |
+| `hurt` | 用了反而返工、被纠正，或没帮上 | 按 EMA 下调（G=0.8 两次 → −0.24，翻成负样本） |
+| `neutral` | 用了但没影响 | G 不变，只计数 |
+
+- **改 G 而不是加乘子**：`V̂ / Q̂ / Â`、证据强度、簇统计全从 `G` 读，只改一处、全链生效；再加一个乘子就是两套真相。
+- **不动 `hits`、不新建条目、不改 `outcome`**：`hits` 是「同一个做法被复现」，反馈是「用后的再评估」；以前只能重记，会把 `hits` 伪造 +1。`outcome` 保留首次结果，`GSource: 'feedback'` 标出这条被反馈改写过。
+- 每条经验带 `feedback: {helped, hurt, neutral}` 计数与 `feedback_log`（最近 20 条，含可选 intent/note），审计可查；召回证据里只有存在反馈时才带这三个计数，没反馈不占字符。
+- 只接受 `exp_recall` 给出的 id；已删除、已被取代的条目拒绝反馈（请给新条反馈）。`config.feedbackEta`（默认 `0.35`）可调 EMA 强度。
+- 边界：反馈是**自报**的，没有自动验证——它改变的是排序依据，不是事实。一次 `hurt` 不会抹掉一条验证过的做法（不翻符号），两次才翻负。
+
 ## 分簇路由（0.3.0）
 
 经验按「簇」组织：簇是类型（`type`）的派生视图，带经验聚合出的签名（产物 / 高频词 / 中文二元组）与统计（条数、成败、最近使用）。`exp_recall` 默认先做**确定性簇路由**：用当前意图与各簇身份（手写描述声明的产物 + 经验主产物）算相似度，过门槛就只在主簇（+ 得分 ≥0.7×主簇的次簇）里检索，否则回退全库。
@@ -155,16 +171,17 @@ node tools/patch-memory-spaces-footer.mjs --profile <名>   # 指定 profile
 ## 测试与体检
 
 ```powershell
-npm test                          # 106 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
+npm test                          # 117 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
 node tools/audit.mjs <dataDir>    # 只读体检，有问题退出码 1
 node tools/eval-routing.mjs       # 路由标定集评估：hit@1 / 误路由 / 回退正确率
 ```
 
-**106 项全绿**：kernel 19 / recall 11 / store 17 / cluster 21 / provider 13 / tools 7 / plugin 5 / type-tool 7 / 页脚补丁 6。
+**117 项全绿**：kernel 19 / recall 11 / store 17 / cluster 21 / feedback 11 / provider 13 / tools 7 / plugin 5 / type-tool 7 / 页脚补丁 6。
 
 - `tests/kernel.test.mjs` 是**与 Python 参考实现的逐字段对拍**（fixture 由 `jitrl_memory.py` 生成）。改 kernel 的论文数学要同步改 Python 并重生成 fixture；
 - `tests/recall.test.mjs` 是 2026-10-29 加的回归面：自然短意图召回、artifact 别名归一、噪声不假召回、degenerate 降级、成败对照不被取代、写入清洗、`exp_type assign`、回报口径一致；
 - `tests/cluster.test.mjs` 是 2026-11-03 加的簇派生视图测试：归属、签名聚合、统计口径、不落盘、类型管理联动、路由门槛与回退；
+- `tests/feedback.test.mjs` 是 2026-11-07 加的用后反馈测试：EMA 语义、neutral 不动 G、clamp、日志上限、被取代/已删除拒绝、排序跟随、簇统计跟随、工具落盘；
 - `tools/audit.mjs` 把「靠人读召回输出」换成指标：类型分布、簇一致性、G 分布、负样本数、对照覆盖、工具残渣、固定 12 条意图的召回率。
 
 内核（JitRL 数学）随包自带，Provider 不依赖其他插件包。

@@ -48,6 +48,16 @@ export const DEGENERATE_ADV_SPREAD = 0.05
 /** 证据强度里「支持条数」的饱和点，与 kernel 的 SUPPORT_FULL 对齐。 */
 const EVIDENCE_SUPPORT_FULL = 3
 
+/**
+ * 用后反馈（0.4.0）：只认这三种结果。neutral 只计数、不动 G。
+ * 映射到信号 ±1 / 0，按 EMA 修正回报 G。
+ */
+export const FEEDBACK_RESULTS = Object.freeze({ helped: 1, hurt: -1, neutral: 0 })
+/** EMA 强度：一次 helped/hurt 把 G 拉向对应端点 35%（G=0.8 一次 hurt → 0.17，两次 → 负）。 */
+export const FEEDBACK_ETA = 0.35
+/** 每条经验保留的反馈日志条数（审计用；超出丢最旧）。 */
+export const FEEDBACK_LOG_LIMIT = 20
+
 /** DSH 家目录：宿主会注入 DSH_HOME；没有时退回 ~/.dsh。换机器不用改任何配置。 */
 function dshHome() {
   const fromEnv = String(process.env.DSH_HOME || '').trim()
@@ -530,6 +540,74 @@ export function upsertExperience(store, input, options = {}) {
   return { experience, action: replaceTarget === undefined ? 'added' : 'superseded', supersededId: replaceTarget === undefined ? undefined : replaceTarget.id, type: resolved, sanitized, typeRecoveredFromNote: recoveredType !== '' }
 }
 
+/**
+ * 用后反馈：对一条**用过**的经验回报结果，按 EMA 修正它的回报 G。
+ *
+ * 为什么改 G 而不是另加一个乘子：V̂ / Q̂ / Â、证据强度、簇统计（成败计数）全从 G 读，
+ * 改 G 是一处改动、全链生效；再加一个乘子就是两套真相，迟早对不上。
+ * 为什么不动 hits、不新建条目：hits 是「同一个做法被复现」的次数，反馈是「用过之后的再评估」；
+ * 以前只能靠重记，那会把 hits 伪造 +1（2026-10-29 踩过）。
+ * 为什么重写 outcome：不重写 —— outcome 是首次记录的结果，G 是含反馈的当前回报，
+ * `GSource === 'feedback'` 标出这条被反馈修正过。
+ *
+ * @param {object} store
+ * @param {string} id - 经验 id（取自 exp_recall 的 evidence[].id）
+ * @param {{result?: string, intent?: string, note?: string}} input
+ * @param {{eta?: number}} [options]
+ * @returns {{id: string, result: string, G_before: number, G_after: number, changed: boolean, outcome: string, typeName: string, feedback: object}}
+ */
+export function applyFeedback(store, id, input = {}, options = {}) {
+  const target = String(id || '').trim()
+  if (target === '') throw new Error('id 必填（取自 exp_recall 的 evidence[].id）')
+  const experience = (Array.isArray(store.experiences) ? store.experiences : []).find((item) => String(item.id) === target)
+  if (experience === undefined) throw new Error(`没有这条经验：${target}（id 取自 exp_recall 的 evidence[].id）`)
+  if (experience.deleted_at) throw new Error(`这条经验已删除，不能再反馈：${target}`)
+  if (experience.superseded_by) throw new Error(`这条经验已被 ${experience.superseded_by} 取代，请给新条反馈：${target}`)
+  const result = String(input.result || '').trim().toLowerCase()
+  if (!Object.prototype.hasOwnProperty.call(FEEDBACK_RESULTS, result)) {
+    throw new Error(`result 只能是 helped / hurt / neutral，收到：${String(input.result)}`)
+  }
+  const etaRaw = Number(options.eta)
+  const eta = Number.isFinite(etaRaw) ? Math.max(0, Math.min(1, etaRaw)) : FEEDBACK_ETA
+  const signal = FEEDBACK_RESULTS[result]
+  const before = round4(Number(experience.G) || 0)
+  // EMA 拉向 ±1：helped 提升、hurt 下调，单次不翻符号（一次坏使用不该抹掉一条验证过的做法），多次才翻转。
+  const after = signal === 0 ? before : round4(Math.max(-1, Math.min(1, before + eta * (signal - before))))
+  const now = new Date().toISOString()
+  if (signal !== 0) {
+    experience.G = after
+    experience.GSource = 'feedback'
+  }
+  experience.lastFeedbackAt = now
+  const previous = experience.feedback !== null && typeof experience.feedback === 'object' ? experience.feedback : {}
+  experience.feedback = {
+    helped: Math.max(0, Math.trunc(Number(previous.helped) || 0)) + (result === 'helped' ? 1 : 0),
+    hurt: Math.max(0, Math.trunc(Number(previous.hurt) || 0)) + (result === 'hurt' ? 1 : 0),
+    neutral: Math.max(0, Math.trunc(Number(previous.neutral) || 0)) + (result === 'neutral' ? 1 : 0),
+    lastAt: now,
+    lastResult: result,
+  }
+  const entry = { at: now, result }
+  const auditIntent = sanitizeField(input.intent).text
+  const auditNote = sanitizeField(input.note).text
+  if (auditIntent !== '') entry.intent = auditIntent.slice(0, 120)
+  if (auditNote !== '') entry.note = auditNote.slice(0, 200)
+  const log = Array.isArray(experience.feedback_log) ? experience.feedback_log.slice() : []
+  log.push(entry)
+  experience.feedback_log = log.slice(-FEEDBACK_LOG_LIMIT)
+  refreshClusters(store)
+  return {
+    id: experience.id,
+    result,
+    G_before: before,
+    G_after: after,
+    changed: after !== before,
+    outcome: String(experience.outcome || 'unknown'),
+    typeName: experience.typeName || SYSTEM_TYPE.name,
+    feedback: { ...experience.feedback },
+  }
+}
+
 /** 软删一条（墓碑）。 */
 export function forgetExperience(store, id) {
   const experience = store.experiences.find((item) => item.id === id)
@@ -627,7 +705,7 @@ export function rankExperiences(store, intent, limit = 8, options = {}) {
       typeName: row ? row.typeName : '未分类',
       evidence: candidate.evidence.map((evidence) => {
         const experience = byId.get(evidence.id)
-        return {
+        const entry = {
           id: evidence.id,
           intent: experience ? experience.intent : '',
           action: experience ? experience.action : evidence.action,
@@ -637,6 +715,18 @@ export function rankExperiences(store, intent, limit = 8, options = {}) {
           similarity: evidence.similarity,
           typeName: experience ? experience.typeName : '',
         }
+        // 有反馈才带：help/hurt/neutral 次数让模型知道这条被用过几次、结果如何（没反馈就不占字符）。
+        const feedback = experience && experience.feedback !== null && typeof experience.feedback === 'object'
+          ? experience.feedback
+          : null
+        if (feedback !== null) {
+          entry.feedback = {
+            helped: Number(feedback.helped) || 0,
+            hurt: Number(feedback.hurt) || 0,
+            neutral: Number(feedback.neutral) || 0,
+          }
+        }
+        return entry
       }),
     }
   })
@@ -896,7 +986,7 @@ export function renderHint(config = {}, maxCharacters = 900) {
   const clusters = Array.isArray(store.clusters) ? store.clusters : []
   const nonEmptyClusters = clusters.filter((cluster) => (Number(cluster.stats && cluster.stats.count) || 0) > 0).length
   const lines = [
-    "【经验库】接同类任务前用 exp_recall(intent) 查历史做法（看 mode：advantage=有成败对照按 Â 排序；evidence=无对照按证据强度，Â 不具区分度）。做完用 exp_record 记：成功/失败/被纠正都要记，负样本才让排序有信息量；同一意图换做法时复用同一 intent 才有对照。类型用 exp_type 管（含 assign 改单条类型）。",
+    "【经验库】接同类任务前用 exp_recall(intent) 查历史做法（看 mode：advantage=有成败对照按 Â 排序；evidence=无对照按证据强度，Â 不具区分度）。做完用 exp_record 记：成功/失败/被纠正都要记，负样本才让排序有信息量；同一意图换做法时复用同一 intent 才有对照。用过某条之后用 exp_feedback 报 helped/hurt（按 EMA 修 G，不动 hits）；类型用 exp_type 管。",
     `当前 ${active} 条经验；类型 ${userTypes.length}/${maxTypes}；簇 ${nonEmptyClusters}/${clusters.length}（有经验/全部）。召回先按簇路由，无同族回退全库。`,
     "类型/簇（名称用于识别；描述越具体，写入与召回越准）：",
   ]
