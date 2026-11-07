@@ -19,7 +19,7 @@
 
 ```powershell
 # 1) 装进目标 profile（tgz 文件，或 git 仓库地址）
-dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.3.0.tgz
+dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.4.1.tgz
 ```
 
 > 为什么用 tarball 而不是目录：`dsh plugin add <目录>` 会做 pnpm link，运行时按真实路径解析依赖，宿主提供的 `dsh-mnemon-source-memory-spaces` 会找不到。tarball 装的是包副本，依赖从 profile 的 `node_modules` 解析。**改完代码要重新 pack + add 才会生效。**
@@ -185,6 +185,25 @@ node tools/eval-routing.mjs       # 路由标定集评估：hit@1 / 误路由 / 
 - `tools/audit.mjs` 把「靠人读召回输出」换成指标：类型分布、簇一致性、G 分布、负样本数、对照覆盖、工具残渣、固定 12 条意图的召回率。
 
 内核（JitRL 数学）随包自带，Provider 不依赖其他插件包。
+
+## 参考与致谢
+
+本包不包含第三方代码；下面这些项目与论文在设计与机制上给过我们参照，按 MIT / 学术引用惯例在此致谢。逐项的许可证与「参考了什么、没采用什么」见 [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md)。
+
+- **JitRL: Just-in-Time Reinforcement Learning for LLM Agent** —— `kernel.js` 的数学来源（状态抽象、折扣回报、非参数 critic、`Â = Q̂ − V̂`）。本包注释标 **arXiv:2601.18510**；公开的 [jitrl-skill](https://github.com/babushkai/jitrl-skill) 引 **arXiv:2501.18510**，两个编号尚待核实是否同一篇，对外引用前先确认。
+- [libiwolve/dsh-experience-library](https://github.com/libiwolve/dsh-experience-library)（MIT）——「经验验证固化层」的定位与三层检验思路。
+- [creativedswork/dsh-expmem](https://github.com/creativedswork/dsh-expmem)（MIT）——经验记录的信任状态 / 取代关系只追加不改写。
+- [pk14742952-AD/dsh-host-rsi](https://github.com/pk14742952-AD/dsh-host-rsi)（MIT）——L1/L2/L3 信号阶梯；v0.4.0 的用后反馈只取了其中一层。
+- [GIT121995/dsh-memory-gate](https://github.com/GIT121995/dsh-memory-gate)（MIT）——「检索到 ≠ 注入」与用后反馈修正置信度。
+- [superSizzzz/dsh-pitfalls](https://github.com/superSizzzz/dsh-pitfalls)（MIT）——负样本档案的结构与「宁可空手不给错答案」的阈值口径。
+- [zilliztech/memsearch](https://github.com/zilliztech/memsearch)（MIT）——memory → skill 自进化路线的方向对照。
+- [EvoMap/evolver-dsh-plugin](https://github.com/EvoMap/evolver-dsh-plugin)（MIT）——按证据分级给策略打分。
+- [babushkai/jitrl-skill](https://github.com/babushkai/jitrl-skill)（MIT）——同一算法在 Claude Code 上的形态与「上下文注入近似 logit 调整」的说明。
+- [Phant0Meow/dsh-meow-memory](https://github.com/Phant0Meow/dsh-meow-memory)（MIT）——七层记忆 / lesson 层 / dream 调度思路。
+- [bugtakue/dsh-ronge-adaptive-skill-archive](https://github.com/bugtakue/dsh-ronge-adaptive-skill-archive)（MIT）——技能推荐 + 经验权重 + 探索配额的方向对照。
+- [omdsh-dev/dsh-mnemon](https://github.com/omdsh-dev/dsh-mnemon)（MIT）——本包对接的记忆空间宿主；页脚补丁作用于本机已装副本，不随包分发上游代码。
+- 分簇路由不引入 LLM 路由器的依据：**arXiv:2610.38796** §C.2。
+- **未采用**：[dsh-brainagent](https://github.com/stas130286-blip/dsh-brainagent) 为非商业许可，只读不抄（详见 NOTICES）。
 
 ## 边界
 
