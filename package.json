@@ -1,6 +1,6 @@
 {
   "name": "dsh-exp-lib-provider",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "经验库的记忆空间 Provider（后端），同时作为 DSH 插件注册 exp_recall / exp_record / exp_feedback / exp_type 工具。",
   "type": "module",
   "main": "index.js",

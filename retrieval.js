@@ -32,7 +32,7 @@ export const ARTIFACT_GROUPS = Object.freeze({
   image: ['图片', '图标', '海报', '视觉'],
   web: ['抓取', '爬取', '浏览器'],
   robot: ['机器人', '动作', 'aelos', '舞蹈'],
-  git: ['git', 'github', '仓库', '分支', '提交', '推送'],
+  git: ['git', 'github', '仓库', '分支', '提交'],
   env: ['沙箱', '环境', '部署', '安装', '依赖'],
 })
 

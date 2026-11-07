@@ -123,6 +123,8 @@ node tools/patch-memory-spaces-footer.mjs --profile <名>   # 指定 profile
   - 相似度 = 0.4 查询覆盖 + 0.25 对称 Jaccard + 0.2 artifact 覆盖 + 0.15 二元组 Jaccard；
   - artifact 按语义组归一（`ppt` / `doc` / `sheet` / `code` / `git` / `env` …）：`pptx`、`幻灯片`、`课件` 都算 ppt，`任务单`、`任务卡`、`教案` 都算 doc；
   - 只共享单个汉字不算信号（`sharesSignal`），避免短查询靠虚词拼出假分数。
+  - artifact 组只收**产物名词**，动作别名不算：`推送` 曾算 git（2026-11-07 移除）——描述里写了「推送」的「网络 / 心跳」簇因此把 git 意图吸走，路由 eval 误判 3 条；移除后误路由 0、hit@1 75.6%、回退 11/11，G1 通过。
+  - 试过两种更激进的「根治」方案，都**不采用**（2026-11-07 实测）：① 跨簇泛词（token / 二元组出现在 ≥ 半数簇里）整体剔除 → hit@1 跌到 73.3%，把「改 profile 的 cordis.patch.yml」这类合法路由一起滤掉；② 单字中文不做路由信号 → hit@1 跌到 62.2%，短中文意图的命中主要靠这些单字。结论：**产物词表修一处就够，别动分词与泛词**。
   旧实现用对称 Jaccard：「做个研学课 PPT」在 17 条真实库上**召回过阈 0/17**（最强 0.0375 < 0.05）；v2 上真实库 17/17 top-1、5 条噪声意图 0/5。
 - **通用 `remember` 被禁用**：面板不出现通用写入入口；若宿主仍调用，返回错误提示改用 `exp_record`。
 - **契约：adapter 方法一律 async**（返回 Promise）——`discover / status / search / list / graph / entityIndex / remember / forget`。memory-spaces 会把返回值直接当 Promise 用（`untilAborted(discover())`、`status().catch(...)`），同步值会报 `… is not a function`；这类坑已踩过两次（2026-10-29 的 discover 与本日的 status）。
