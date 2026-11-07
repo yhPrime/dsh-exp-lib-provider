@@ -93,21 +93,33 @@ export function clusterStateOf(cluster, options = {}) {
 }
 
 function statsOf(rows) {
+  // 按任务统计：同一 taskId 的多条步骤只算一次成败（否则 6 步任务给类型记 6 票）。
+  // 整条任务条优先用它的 G；只有步骤时取最弱一步（min），与 upsert 的口径一致。
+  const groups = new Map()
+  for (const row of rows) {
+    const key = String(row.taskId || row.id)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(row)
+  }
   let success = 0
   let fail = 0
   let uses = 0
   let lastUsedAt = ''
-  for (const row of rows) {
-    const reward = Number(row.G)
+  for (const group of groups.values()) {
+    const taskRow = group.find((row) => (row.kind || 'task') === 'task')
+    const rewards = group.map((row) => Number(row.G)).filter(Number.isFinite)
+    const reward = taskRow !== undefined ? Number(taskRow.G) : (rewards.length > 0 ? Math.min(...rewards) : NaN)
     if (Number.isFinite(reward)) {
       if (reward > 0) success += 1
       else if (reward < 0) fail += 1
     }
-    uses += Math.max(1, Math.trunc(Number(row.hits) || 1))
-    const seen = String(row.lastSeenAt || row.ts || '')
-    if (seen > lastUsedAt) lastUsedAt = seen
+    for (const row of group) {
+      uses += Math.max(1, Math.trunc(Number(row.hits) || 1))
+      const seen = String(row.lastSeenAt || row.ts || '')
+      if (seen > lastUsedAt) lastUsedAt = seen
+    }
   }
-  return { count: rows.length, success, fail, uses, lastUsedAt }
+  return { count: groups.size, success, fail, uses, lastUsedAt, steps: rows.filter((row) => (row.kind || 'task') === 'step').length || rows.length }
 }
 
 function buildCluster(type, rows) {
@@ -132,7 +144,7 @@ function buildCluster(type, rows) {
 export function ensureClusters(store) {
   const types = Array.isArray(store.types) && store.types.length > 0 ? store.types : []
   const rows = (Array.isArray(store.experiences) ? store.experiences : [])
-    .filter((item) => item && !item.deleted_at && !item.superseded_by)
+    .filter((item) => item && !item.deleted_at && !item.superseded_by && !item.retired_at)
   const byType = new Map()
   const known = new Set(types.map((type) => String(type.id)))
   for (const row of rows) {
@@ -156,7 +168,8 @@ export function refreshClusters(store) {
  *
  * 取值依据（2026-11-03 本机 45 条标定集，`node tools/eval-routing.mjs`）：
  * 应回退类的最高分 0.145（「今天天气怎么样」），应路由类的最低分 0.173（「查论文消融」），
- * 门槛取 0.17 落在两者之间：hit@1 82.2%、误路由 0、回退类 11/11 全对。
+ * 门槛取 0.17 落在两者之间：hit@1 75.6%、误路由 0、回退类 11/11 全对（2026-11-07 复测；
+ * 余量只剩 0.027，再加一条「心跳式」经验就可能把「推送到 GitHub」重新拉过门槛——扩容后必须重核）。
  * 标定集扩缩后必须重核（见 tests/fixtures/labeled-intents.json）。
  */
 export const ROUTE_MIN_SCORE = 0.17
@@ -235,9 +248,17 @@ export function buildBrief(store, route, candidates = [], maxCharacters = 300) {
     if (top !== undefined) {
       const evidence = (top.evidence || [])[0] || {}
       lines.push(`做法：${String(top.action).slice(0, 60)}（${evidence.outcome || '未验证'}）`)
+      // 分层反馈：计数是终身的，窗口是参与 G 重放的最近事件数；两者不可互推，必须标清。
+      const fb = evidence.feedback
+      if (fb !== undefined && fb !== null && typeof fb === 'object') {
+        lines.push(`反馈（终身）：helped ${Number(fb.helped) || 0}｜hurt ${Number(fb.hurt) || 0}｜neutral ${Number(fb.neutral) || 0}（窗口 ${Number(fb.window) || 0} 条参与重放）`)
+      }
     }
     const negative = list.find((item) => (item.evidence || []).some((evidence) => Number(evidence.G) < 0))
     if (negative !== undefined) lines.push(`反例：${String(negative.action).slice(0, 50)}（失败过）`)
+    // 生命周期提示：簇里有做法「复活过」，说明它曾失效、后来又被验证。
+    const revived = list.find((item) => (item.evidence || []).some((evidence) => evidence.lifecycle && evidence.lifecycle.type === 'revived'))
+    if (revived !== undefined) lines.push(`注意：${String(revived.action).slice(0, 30)} 复活过（曾失效，后来又被验证）。`)
   }
   let text = lines.join('\n')
   if (text.length > maxCharacters) text = `${text.slice(0, Math.max(0, maxCharacters - 1))}…`

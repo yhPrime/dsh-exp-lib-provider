@@ -196,25 +196,6 @@ export function computeReturn(rewards, gamma = DEFAULT_GAMMA) {
   return total
 }
 
-/**
- * Resolve one reward from an outcome keyword and an optional explicit score.
- * Explicit score wins; otherwise the keyword table decides.
- * @param {string} outcome - Outcome keyword.
- * @param {number|null} [explicit] - Explicit score in [-1, 1].
- * @returns {number} Reward.
- */
-export function inferScore(outcome, explicit) {
-  if (explicit !== null && explicit !== undefined && explicit !== '') {
-    return Math.max(-1, Math.min(1, Number(explicit)))
-  }
-  const key = String(outcome || '').trim().toLowerCase()
-  if (Object.prototype.hasOwnProperty.call(OUTCOME_SCORES, key)) return OUTCOME_SCORES[key]
-  for (const [name, value] of Object.entries(OUTCOME_SCORES)) {
-    if (key.includes(name)) return value
-  }
-  return 0
-}
-
 /* -------------------------------------------------------------------------- */
 /* Retrieval                                                                  */
 /* -------------------------------------------------------------------------- */

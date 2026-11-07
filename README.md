@@ -1,6 +1,8 @@
 # dsh-exp-lib-provider
 
-把「经验库」做成 **dsh-mnemon 的一个记忆空间 Provider**：空间由一个 JSON 文件存储，面板可观可管，模型的写入只走 `exp_record`，读取走 `exp_recall` 或记忆插件的通用检索（同一套语义）。排序分两种模式：有成败对照时按 JitRL 优势（`Â = Q̂ − V̂`）；没有对照时明说「Â 不具区分度」，改按证据强度排序——不假装有区分度。
+把「经验库」做成 **dsh-mnemon 的一个记忆空间 Provider**：空间由一个 JSON 文件存储，面板可观可管；写入只走 `exp_record`，读取走 `exp_recall`（或记忆插件的通用检索）。
+
+机制来自 JitRL（arXiv:2601.18510）：把「状态-做法-回报」存成非参数记忆，需要时按 **优势 Â = Q̂ − V̂** 排序；没有成败对照时明说「Â 不具区分度」，改按证据强度排——不假装有区分度。这条链对应人的经验循环：**收集 → 使用 → 更新**。
 
 ## 它提供什么
 
@@ -9,210 +11,170 @@
 | `typeId` / 包名 | `exp-lib` / `dsh-exp-lib-provider` |
 | 形态 | 本地 Provider（`locality: local`，`workspaceBinding: optional-override`） |
 | 能力 | search / browse / graph / entities / forget；**remember: false**；`writeMode: exact`、`deletionMode: soft` |
-| 配置字段 | `dataDir`（可选，默认 `$DSH_HOME/exp-lib/provider-data`，支持 `~` 开头；一般不用配，跟随记忆引擎里的设置） |
-| 工具 | `exp_record`、`exp_recall`、`exp_feedback`、`exp_type`（与本 Provider 共用同一份数据） |
+| 工具 | `exp_record`、`exp_recall`、`exp_feedback`、`exp_type`（与 Provider 共用同一份数据） |
 | 数据 | `<dataDir>/exp-lib.json`：`{ version, types[], experiences[] }` |
 
 ## 安装
 
-前置：DSH 里已装 `dsh-mnemon`（记忆插件）。本包是它的记忆空间 Provider，同时也自己注册四个工具，所以装法是「普通插件」+「挂一次 Provider」。
+前置：DSH 里已装 `dsh-mnemon`。
 
 ```powershell
-# 1) 装进目标 profile（tgz 文件，或 git 仓库地址）
-dsh plugin --profile <profile> add ./dist/dsh-exp-lib-provider-<版本>.tgz   # <版本> 用 npm pack 产出的最新号
+dsh plugin --profile <profile> add ./dist/dsh-exp-lib-provider-<版本>.tgz
 ```
 
-> 为什么用 tarball 而不是目录：`dsh plugin add <目录>` 会做 pnpm link，运行时按真实路径解析依赖，宿主提供的 `dsh-mnemon-source-memory-spaces` 会找不到。tarball 装的是包副本，依赖从 profile 的 `node_modules` 解析。**改完代码要重新 pack + add 才会生效。**
+用 tarball 而不是目录：`dsh plugin add <目录>` 会 pnpm link，运行时按真实路径解析，宿主提供的 `dsh-mnemon-source-memory-spaces` 会找不到。改完代码要重新 pack + add 才生效。
 
-2) 在插件管理里启用 `dsh-exp-lib-provider`。`dsh plugin add` 只是转发 pnpm，不会把包写进 `dsh.profile.bundles`；没启用的话四个工具和每轮提示段都不会出现。
-
-3) 把 Provider 挂进 memory-spaces（一次性；改前备份 profile 的 `cordis.patch.yml`）。在已有的 `- id: mnemon-source-memory-spaces` 条目里，给 `providers` 列表末尾补一条：
+2) 插件管理里启用 `dsh-exp-lib-provider`（`dsh plugin add` 不会自动写进 bundles）。  
+3) 在 `cordis.patch.yml` 的 `mnemon-source-memory-spaces` 条目里给 `providers` 末尾补：
 
 ```yaml
       - use: dsh-exp-lib-provider
         instanceId: exp-lib
 ```
 
-   - 数据目录不用写在这里：装完在面板里建空间，再在「记忆引擎 → Provider → 经验库」里设路径，工具会自动跟随（见下节）。
-   - 只有记忆插件用了自定义存储根、自动找不到 `memory-providers.json` 时，才在这里补 `config: { mnemonDataDir: ~/.mnemon }`。
-
 4) 重启 DSH。
 
-## 两层开关（都能在界面里启停）
+**两层开关**：插件管理（工具面）与记忆引擎 → Provider 列表（存储面）都要开。
 
-| 层 | 位置 | 控制什么 |
-|---|---|---|
-| **DSH 插件** | 插件管理（bundles 里能看到 `dsh-exp-lib-provider`） | 工具面：`exp_recall` / `exp_record` / `exp_feedback` / `exp_type` 是否可用 |
-| **记忆 Provider** | 记忆引擎 → Provider 列表里的「经验库」 | 存储/空间：这个 Provider 是否参与记忆空间 |
+## 数据目录
 
-装好后两处都要开：插件管理里启用插件；记忆引擎里把「经验库」的开关打开。Provider 卡片显示「未启用」是正常的，点右侧开关即可。
+工具与 Provider 读同一份配置，优先级：
 
-## 数据目录从哪来（优先级）
+1. 记忆引擎里「经验库」Provider 的数据目录（`memory-providers.json` 的 `services["exp-lib"].dataDir`）——改了工具自动跟随；
+2. 插件 `cordis.patch.yml` 的 `dataDir`；
+3. 默认 `$DSH_HOME/exp-lib/provider-data`。
 
-工具面与 Provider 读的是同一份配置：
-
-1. 记忆引擎里「经验库」Provider 的数据目录（`memory-providers.json` 的 `services["exp-lib"].dataDir`）——改了它，工具自动跟随；
-2. 读不到时退回插件 `cordis.patch.yml` 里的 `dataDir`；
-3. 再退回默认 `$DSH_HOME/exp-lib/provider-data`（宿主没注入 `DSH_HOME` 时用 `~/.dsh`）。
-
-`memory-providers.json` 按顺序找：`mnemonDataDir` 配置 → `DSH_MNEMON_DATA_DIR` → `MNEMON_DATA_DIR` → profile 的 `cordis.patch.yml` 里记忆插件条目的 `dataDir`（环境变量缺省时扫 `$DSH_HOME/profiles/*`，跳过 `backup-*` 备份目录）→ 工作区 `.mnemon` → **cwd 祖先链里的 `.mnemon`** → `~/.mnemon`。所以**记忆插件用默认或自定义存储根都能自动找到**，换机器不用重新打包，改面板里的路径即可。
-
-> v0.2.3 起不再依赖 `DSH_PROFILE_DIR` / `DSH_PROFILE`：这两个变量是宿主给「模型发起的 shell」注入的，插件进程里不一定有（2026-10-30 实测：缺环境变量时工具退回默认空目录，提示层显示 0 条经验，`exp_record` 会写到错误的库）。现在环境缺省就扫 profiles 目录，再从 cwd 逐级往上找 `.mnemon`；显式给了 `mnemonDataDir` 时不做这两步猜测。
-
-## 可选：经验库卡片页脚显示「条数 / 连接 / 大小」
-
-记忆空间卡片页脚由 `dsh-mnemon-source-memory-spaces` 的客户端 bundle 渲染：只有 `origin === 'native'` 才显示「N 条记忆 / N 条连接 / 大小」，三方 Provider 一律显示「第三方本地记忆 + 数据目录」。经验库的 `status()` 本来就返回 `stats`（宿主会把 `{ ...metadata, ...status }` 合进卡片），只是客户端按 origin 分叉把它丢掉了。
-
-`tools/patch-memory-spaces-footer.mjs` 打一个单点补丁：有 `stats` 就显示统计（没有才退回类型 + 目录），并把经验库的计数文案写成「N 条经验」。脚本幂等，上游改了页脚实现时找不到锚点会**报错退出**，不会静默改错地方；写临时文件再 rename 覆盖，断开 pnpm store 硬链接（不污染全局 store），原文件备份到 `./备份/<日期>/`（可用 `EXP_PATCH_BACKUP_DIR` 指定别处）。
-
-```powershell
-node tools/patch-memory-spaces-footer.mjs --check-only    # 只报告状态
-node tools/patch-memory-spaces-footer.mjs                 # 默认 desktop profile
-node tools/patch-memory-spaces-footer.mjs --profile <名>   # 指定 profile
-```
-
-`dsh-mnemon` / memory-spaces 升级会带回未打补丁的 bundle，升级后重跑一次即可；想还原就用备份文件覆盖（同样先删再复制，别直接覆盖硬链接）。改完刷新页面；若浏览器还缓存旧 bundle，重启 DSH 一次。
+`memory-providers.json` 按顺序找：`mnemonDataDir` → 环境变量 → profile 配置 → 工作区 `.mnemon` → cwd 祖先链 → `~/.mnemon`。换机器不用重新打包。
 
 ## 创建空间
 
-重启后：**记忆插件 → 记忆空间 → 新建**，选 Provider「经验库」，名称填 `经验库`，描述用默认或自己写：
+**记忆插件 → 记忆空间 → 新建**，选 Provider「经验库」，名称 `经验库`，描述：
 
 > 存放工作的经验：每条记录做法与结果，按 JitRL 优势召回，供接同类任务前参考。
 
-启用后，模型的数据会写在 `<dataDir>/exp-lib.json`。
+## 提示层与类型
 
-## 每轮提示层
+插件向系统提示追加一段有界文本（`order: 160`）：类型目录 + 工具用法 + 「成功/失败/被纠正都要记；同一意图换做法时复用同一 intent」；`config.hint: false` 可关。
 
-插件启用时会向系统提示追加一段有界文本（`order: 160`）：类型目录 + 用法提示（`exp_recall` / `exp_record` / `exp_feedback` / `exp_type`），并明确「用过某条之后报 helped/hurt」。提示里明确要求「成功/失败/被纠正都要记，同一意图换做法时复用同一 intent」，否则库里只有成功样本、排序永远没有区分度。内容每轮动态读当前数据文件，条数会跟着变；`config.hint: false` 可关掉。它不经过记忆组合（不需要 scoped 策略），**禁用插件即消失**。
+类型不预设：模型在 `exp_record` 给名字，必要时自动创建，四道限制——规范化（2–16 字符）、近似合并（子串 / 二元组 Jaccard ≥0.8）、泛化名归「未分类」、上限 24 个（`config.maxTypes`）且每天最多 6 个（`config.newTypesPerDay`）。`exp_type` 管 list / create / rename / merge / assign / delete。
 
-## 类型：不预设，按需创建 + 四道限制
-
-安装后只有系统兜底类型「未分类」。业务类型由模型在 `exp_record` 时给名字，必要时自动创建；为防止「无限分类」有四道限制：
-
-1. **规范化与长度**：NFKC、去控制字符、压缩空白，2–16 字符；
-2. **近似合并**：与已有类型互为子串，或字符二元组 Jaccard ≥ 0.8 → 归到已有类型，不新建；
-3. **泛化名归兜底**：其他 / 其它 / 杂项 / 随便 / 未分类… 直接归「未分类」；
-4. **数量与频率**：业务类型上限 24 个（`config.maxTypes`），每天最多新建 6 个（`config.newTypesPerDay`），超限归「未分类」并在返回里给 `typeWarning`。
-
-`exp_record` 新增可选 `typeDescription`（≤120 字）：新建类型时写清“收什么、召回怎么用”；复用已有类型时忽略。返回里带 `typeCreated` / `typeMergedInto` / `typeWarning` / `typeCount` / `typeLimit`。
-
-> 升级不会删已有库里的类型；新环境从「未分类」开始。
-
-### 类型管理工具 `exp_type`
-
-| action | 作用 |
-|---|---|
-| `list` | 列出类型与使用条数（system 排最后） |
-| `create` | 新建类型（`name` + 可选 `description`） |
-| `rename` | 改名，引用它的经验同步更新 |
-| `merge` | `names[]` 合并到 `newName`（不存在会新建），经验批量改挂、源类型删除 |
-| `assign` | `id` + `name`：把**单条**经验改挂到指定类型；不动 `hits`，不新增条（修「记错类型」用） |
-| `delete` | 删除类型，经验归「未分类」；系统类型不可删 |
 ## 语义
 
-- **写入唯一入口**：`exp_record(intent, action, outcome?, type?, note?)`
-  - 重复（同做法、相似度 ≥ 0.9）→ 就地更新 `hits / outcome / note`；
-  - 近似替换（同意图、同类型、不同做法）→ 新条 + 旧条 `superseded_by`，**但只在两边都是正回报时才取代**：一旦有一条失败，两条都留着当对照（否则库里永远没有负样本）；
-  - 其他 → 追加。
-- **写入卫生**：`note` / `intent` / `action` 里混进的工具调用残渣（`</note>`、`<parameter name="type">…`）会被剥掉；若 `type` 丢了但残渣里有，会**捞回来**（返回值 `noteSanitized` / `typeRecoveredFromNote`）。真实踩过：一条 PPT 经验因为残渣掉进「未分类」，`ty_ppt` 计数一直为 0。
-- **读取**：`exp_recall(intent, limit?)` → 召回层 v2 检索邻居 → 排序。返回值顶层的 `mode` 说明用了哪套口径：
-  - `advantage`：邻居里有成败对照（advantage 极差 ≥ 0.05）→ `Â = Q̂ − V̂`，`rank_score = Â × confidence`；
-  - `evidence`：样本回报几乎相同（实测全是 success/accepted 时 `Â` 恒为 0）→ 改按「相似度 × 支持度 × 证据质量」，并在 `note` 里写明「Â 不具区分度」。
-  默认过滤已删与已被取代的旧条；召回为空时 `note` 会说明「没有相似度 ≥ 0.12 的历史经验」。
-- **召回层 v2**（`retrieval.js`，与 kernel 的论文数学解耦）：
-  - 相似度 = 0.4 查询覆盖 + 0.25 对称 Jaccard + 0.2 artifact 覆盖 + 0.15 二元组 Jaccard；
-  - artifact 按语义组归一（`ppt` / `doc` / `sheet` / `code` / `git` / `env` …）：`pptx`、`幻灯片`、`课件` 都算 ppt，`任务单`、`任务卡`、`教案` 都算 doc；
-  - 只共享单个汉字不算信号（`sharesSignal`），避免短查询靠虚词拼出假分数。
-  - artifact 组只收**产物名词**，动作别名不算：`推送` 曾算 git（2026-11-07 移除）——描述里写了「推送」的「网络 / 心跳」簇因此把 git 意图吸走，路由 eval 误判 3 条；移除后误路由 0、hit@1 75.6%、回退 11/11，G1 通过。
-  - 试过两种更激进的「根治」方案，都**不采用**（2026-11-07 实测）：① 跨簇泛词（token / 二元组出现在 ≥ 半数簇里）整体剔除 → hit@1 跌到 73.3%，把「改 profile 的 cordis.patch.yml」这类合法路由一起滤掉；② 单字中文不做路由信号 → hit@1 跌到 62.2%，短中文意图的命中主要靠这些单字。结论：**产物词表修一处就够，别动分词与泛词**。
-  旧实现用对称 Jaccard：「做个研学课 PPT」在 17 条真实库上**召回过阈 0/17**（最强 0.0375 < 0.05）；v2 上真实库 17/17 top-1、5 条噪声意图 0/5。
-- **通用 `remember` 被禁用**：面板不出现通用写入入口；若宿主仍调用，返回错误提示改用 `exp_record`。
-- **契约：adapter 方法一律 async**（返回 Promise）——`discover / status / search / list / graph / entityIndex / remember / forget`。memory-spaces 会把返回值直接当 Promise 用（`untilAborted(discover())`、`status().catch(...)`），同步值会报 `… is not a function`；这类坑已踩过两次（2026-10-29 的 discover 与本日的 status）。
-- **忘记 = 软删墓碑**：`deleted_at` 置位，保留 30 天后启动时清理；`forget` 后检索与内容页都不再显示。
-- **回报口径只有一份**：`store.scoreOf` 直接用 kernel 的 `OUTCOME_SCORES`（accepted +1.0 / success +0.8 / partial +0.3 / unknown 0 / failed −0.6 / corrected −0.8 / aborted −1.0）。此前 store 自己写了一套（success 也按 1.0、aborted 按 −0.3），和文档/内核都对不上。
+- **写入**：`exp_record(intent, action, outcome?, type?, note?, taskId?, kind?, stepIndex?, stepTotal?, failedStep?, stepRewards?)`
+  - 同做法且相似度 ≥0.9，且**回报符号相同** → 就地更新 `hits / outcome`；
+  - 同意图、同类型、不同做法 → 新条 + 旧条 `superseded_by`，**只在两边都是正回报时取代**（留负样本做对照）；
+  - 其余追加。
+- **读取**：`exp_recall(intent, limit?)` → 召回层 v2 → 排序。`mode` 说明口径：
+  - `advantage`：有成败对照（advantage 极差 ≥0.05）→ `Â = Q̂ − V̂`，`rank_score = Â × confidence`；
+  - `evidence`：回报几乎相同 → 「相似度 × 支持度 × 证据质量」，`note` 写明「Â 不具区分度」。
+- **召回层 v2**（`retrieval.js`）：0.4 查询覆盖 + 0.25 Jaccard + 0.2 artifact 覆盖 + 0.15 二元组；artifact 按语义组归一（ppt/doc/sheet/code/git/env），只收产物名词（`推送` 2026-11-07 已从 git 别名移除，误路由从 3 条降到 0）。
+- **回报口径只有一份**：`OUTCOME_SCORES`（accepted +1.0 / success +0.8 / partial +0.3 / unknown 0 / failed −0.6 / corrected −0.8 / aborted −1.0）。
+- **软删**：`forget` 置 `deleted_at`，30 天后启动清理。
+- **写入卫生**：note/intent 里的工具调用残渣会被剥掉；`type` 丢了但残渣里有会捞回来。
 
-## 面板能看到的
+## 机制
 
-| 位置 | 数据 |
+只覆盖三条线：**收集**（情景/程序性）、**使用**（同类线索 + Â 排序）、**更新**（误差反馈 + 衰减 + 退休/复活），外加**巩固**（候选规则）。不做：自动注入、LLM 路由/归纳、技能自动落盘、向量检索——理由与逐条对照见 `归档/过程/exp-lib-机制对齐-2026-11-07.md`。
+
+
+### 用后反馈（收集之后的第一层更新）
+
+`exp_feedback(id, helped | hurt | neutral)`：
+
+- `G` 不是随手改的数，而是 **`GOutcome`（基准，由 outcome 决定）+ `feedback_log`（事件）** 重放出来：记录/重记只改基准，反馈历史保留；
+- 事件带 `{at, result, eta}`，按 EMA 逐步重放（默认 η=0.35，`config.feedbackEta`）；`neutral` 不改 G；
+- 计数（helped/hurt/neutral）终身，`feedback_log` 只留最近 20 条（先淘汰 neutral 再淘汰最老信号事件）；两者不可互推，证据里用 `feedback.window` 标窗口；
+- **写时衰减**：超过 30 天（`config.feedbackDecayDays`）的事件在写入时折叠进 `GOutcome`，读时绝不折叠——G 不随日历漂移；
+- 只接受 `exp_recall` 给出的 id；已删除 / 已被取代 / 已退休的条目拒绝反馈。
+
+### 任务与步骤（人的多步经验）
+
+一条经验可以是整条任务或其中一步：
+
+| 字段 | 含义 |
 |---|---|
-| 记忆 Provider 列表 | 经验库（exp-lib）开关与 `dataDir` 配置 |
-| 记忆空间 → 检索 | JitRL 优势排序结果 |
-| 记忆空间 → 内容 | 全部可见经验（类型、结果、备注） |
-| 记忆空间 → 实体 | 意图/做法里的高频词 |
-| 记忆空间 → 图谱 | 经验节点 + 「取代」边 |
-| 删除 | 软删（可恢复；TTL 后物理清理） |
+| `taskId` | 任务 id；不填默认=自身 id；`kind=step` 没给时按意图自动归组（`auto_<hash>`） |
+| `kind` | `task`（默认）/ `step` |
+| `stepIndex` / `stepTotal` | 步骤序号与总数 |
+| `failedStep` | 整条记录时失败发生在第几步 |
+| `stepRewards` | 分步回报；给了它，整条 `G = min(outcome 回报, 最弱一步)`，与「一步砸了整件事没成」一致 |
 
-## 用后反馈（0.4.0）
+统计按 `taskId` 去重（6 步任务算 1 票，另报 `steps`）；合并与取代限同任务（步骤还限同 stepIndex）；跨任务同名做法不合并。
 
-召回给出的是「参考」，用过之后到底帮没帮上，只有用完才知道。`exp_feedback(id, result)` 补上这一段闭环：
+### 生命周期（取代 / 复活 / 退休 / 删除）
 
-| result | 含义 | 对 G 的影响 |
-|---|---|---|
-| `helped` | 靠它做成了 | 按 EMA 上调（G=0.8 一次 → 0.87，多次趋近 1.0） |
-| `hurt` | 用了反而返工、被纠正，或没帮上 | 按 EMA 下调（G=0.8 两次 → −0.24，翻成负样本） |
-| `neutral` | 用了但没影响 | G 不变，只计数 |
+- 取代：新正条取代旧正条，旧条隐藏保留（对照）；
+- 复活：同一做法又做成 → 解除隐藏、`hits+1`，并**顶替现任**（当前可见的同类做法被隐掉）；
+- **负样本退休**：同一做法已有成功 → 旧失败条退休（`retired_at`，软隐、不召回、不计统计）；同一做法再次失败 → 自动复活那条退休负样本，不新开重复条（从退休复活不顶替成功现任）；
+- 所有生命周期事件写 `history`（`created/superseded/revived/retired/forgotten`，封顶 50）；反馈事件只留在 `feedback_log`，不重复入史。
 
-- **改 G 而不是加乘子**：`V̂ / Q̂ / Â`、证据强度、簇统计全从 `G` 读，只改一处、全链生效；再加一个乘子就是两套真相。
-- **不动 `hits`、不新建条目、不改 `outcome`**：`hits` 是「同一个做法被复现」，反馈是「用后的再评估」；以前只能重记，会把 `hits` 伪造 +1。`outcome` 保留首次结果，`GSource: 'feedback'` 标出这条被反馈改写过。
-- 每条经验带 `feedback: {helped, hurt, neutral}` 计数与 `feedback_log`（最近 20 条，含可选 intent/note），审计可查；召回证据里只有存在反馈时才带这三个计数，没反馈不占字符。
-- 只接受 `exp_recall` 给出的 id；已删除、已被取代的条目拒绝反馈（请给新条反馈）。`config.feedbackEta`（默认 `0.35`）可调 EMA 强度。
-- 边界：反馈是**自报**的，没有自动验证——它改变的是排序依据，不是事实。一次 `hurt` 不会抹掉一条验证过的做法（不翻符号），两次才翻负。
+### 证据与简报
 
-## 分簇路由（0.3.0）
+`exp_recall` 的 evidence 带：`id/intent/action/outcome/G/note/similarity/typeName/taskId/kind/stepIndex/stepTotal/failedStep`，有反馈时带 `feedback{helped,hurt,neutral,window}`，有生命周期时带 `lifecycle{type,at,reason?}`（`hits` 与 `revived_at` 已并入 `lifecycle`，不再单列）。
 
-经验按「簇」组织：簇是类型（`type`）的派生视图，带经验聚合出的签名（产物 / 高频词 / 中文二元组）与统计（条数、成败、最近使用）。`exp_recall` 默认先做**确定性簇路由**：用当前意图与各簇身份（手写描述声明的产物 + 经验主产物）算相似度，过门槛就只在主簇（+ 得分 ≥0.7×主簇的次簇）里检索，否则回退全库。
+`brief`（≤300 字符）给一行摘要：簇名与任务级统计、一条做法、一条反例、有复活过的提示、有反馈时的「终身计数 + 重放窗口」。
 
-- 不调 LLM、不增加模型调用：路由是本地纯函数。依据 arXiv:2610.38796 §C.2——对自带相似度检索的记忆系统加 LLM 路由，奖励无一致提升、成本反而 +8–29%。
-- 返回新增 `brief`（≤300 字符记忆简报：簇名、条数、成功率、一条做法、一条反例）与 `route`（命中的簇、分数、是否回退）；候选 `note` 展示截断 300 字符（保首尾，数据不删）。
-- `exp_record` 没给类型时按同一路由自动归族；落不进任何簇就保持「未分类」。
-- 配置（插件 config）：`routing: 'on' | 'shadow' | 'off'`（默认 `on`；`shadow` 只附路由信息、不改召回；`off` 等于 v0.2.3 行为）、`autoAssign: false` 关闭写入自动归族。
-- 门槛与标定集：`tests/fixtures/labeled-intents.json`（45 条）。`node tools/eval-routing.mjs` 复跑：当前 hit@1 82.2%、误路由 0、回退类 11/11 全对。
+### 归纳提示
 
-实测（本机 32 条可见经验）：单次 `exp_recall` 输出 P50 从 6.8K 字符降到 3.7K；12 条自然意图里 8 条被路由收窄、4 条正确回退。
+同族 ≥3 条时多返回一句 `induction`：报「本次可见 N 条｜类型｜正/负回报」，要求模型动手前先自己写一句共性——不做结论、零 LLM。`config.induction: false` 可关。
+
+### 巩固：候选规则（不写库）
+
+同族 ≥3 条且**同时有正负对照**时，`exp_recall` 多返回一个 `consolidated`：从正例的共同中文二元组与负例独有词里抽一条可检验的规则候选，例如「候选规则（3 条：正 2/负 1）；优先 克隆、相邻；避免 套模板。未经验证，请先自己确认再采信。」。
+
+- 零 LLM、不写库、文本 ≤200 字符；`config.consolidation: false` 可关；
+- 全成功/全失败/样本不足时不给——「哪种更好」无从谈起（对应 ExpeL 的洞察抽取，但我们不做自动技能固化成文件）。
+
+## 分簇路由
+
+簇是类型的派生视图（签名 = 产物/高频词/中文二元组 + 统计）。`exp_recall` 默认确定性路由：意图与簇身份相似度过 0.17 就只在主簇（+ ≥0.7×主簇的次簇）检索，否则回退全库；不调 LLM（依据 arXiv:2610.38796 §C.2：加 LLM 路由奖励无提升、成本 +8–29%）。
+
+`exp_record` 没给类型时按同一路由自动归族。`routing: 'on' | 'shadow' | 'off'`（默认 on）。
+
+标定集 `tests/fixtures/labeled-intents.json`（45 条），当前 **hit@1 75.6%、误路由 0、回退 11/11**，余量 0.027（扩容后必须重核）。
+
+## 用法统计与迁移留痕
+
+- `usage.jsonl`（零 token、可关）：四个工具每次调用一行；recall 记 hit/candidates/mode/route/route_score/limit/ids/induction，record 记 op/outcome/typeName/hits，feedback 记 result 与 G 前后，type 记 op/target；失败调用记 `ok:false`；intent/action 截 120 字、家目录折叠、凭据打码；1MB 轮转；
+- `audit` 的「迁移留痕」行：读时迁移重算了几行 G、最大 Δ、样例 id（读时不落盘）。
 
 ## 测试与体检
 
 ```powershell
-npm test                          # 124 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
+npm test                          # 234 项断言（开发工作区；发布树不含 tests/）
 node tools/audit.mjs <dataDir>    # 只读体检，有问题退出码 1
-node tools/eval-routing.mjs       # 路由标定集评估：hit@1 / 误路由 / 回退正确率
-node tools/fix-residue.mjs [--write]  # 残渣修复：默认 dry-run；--write 先备份再落盘
+node tools/eval-routing.mjs       # 路由标定：hit@1 / 误路由 / 回退
+node tools/fix-residue.mjs [--write]  # 残渣修复，默认 dry-run
 ```
 
-**124 项全绿**：kernel 19 / recall 12 / store 17 / cluster 21 / feedback 11 / provider 14 / tools 7 / plugin 5 / type-tool 7 / 残渣修复 5 / 页脚补丁 6。
-
-- `tests/kernel.test.mjs` 是**与 Python 参考实现的逐字段对拍**（fixture 由 `jitrl_memory.py` 生成）。改 kernel 的论文数学要同步改 Python 并重生成 fixture；
-- `tests/recall.test.mjs` 是 2026-10-29 加的回归面：自然短意图召回、artifact 别名归一、噪声不假召回、degenerate 降级、成败对照不被取代、写入清洗、`exp_type assign`、回报口径一致；
-- `tests/cluster.test.mjs` 是 2026-11-03 加的簇派生视图测试：归属、签名聚合、统计口径、不落盘、类型管理联动、路由门槛与回退；
-- `tests/feedback.test.mjs` 是 2026-11-07 加的用后反馈测试：EMA 语义、neutral 不动 G、clamp、日志上限、被取代/已删除拒绝、排序跟随、簇统计跟随、工具落盘；
-- `tools/audit.mjs` 把「靠人读召回输出」换成指标：类型分布、簇一致性、G 分布、负样本数、对照覆盖、工具残渣、固定 12 条意图的召回率。
-
-内核（JitRL 数学）随包自带，Provider 不依赖其他插件包。
+测试面：kernel 与 Python 参考逐字段对拍（含巩固 5 项）（`tests/fixtures/golden-advantages.json`）、召回回归、簇视图、反馈重放/衰减/台账、任务步骤、生命周期、行为模拟、归纳、用法日志、迁移留痕、页脚补丁。`audit` 覆盖类型分布、簇一致性、G 分布、负样本、对照覆盖、残渣、固定 12 意图召回率、退休/复活、迁移。
 
 ## 参考与致谢
 
-本包不包含第三方代码；下面这些项目与论文在设计与机制上给过我们参照，按 MIT / 学术引用惯例在此致谢。逐项的许可证与「参考了什么、没采用什么」见 [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md)。
+本包不包含第三方代码；下面这些项目与论文在设计与机制上给过参照，按 MIT / 学术引用惯例致谢。逐项许可证与「参考了什么、没采用什么」见 [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md)。
 
 - **JitRL: Just-in-Time Reinforcement Learning for LLM Agent** —— `kernel.js` 的数学来源（状态抽象、折扣回报、非参数 critic、`Â = Q̂ − V̂`）。本包注释标 **arXiv:2601.18510**；公开的 [jitrl-skill](https://github.com/babushkai/jitrl-skill) 引 **arXiv:2501.18510**，两个编号尚待核实是否同一篇，对外引用前先确认。
-- [libiwolve/dsh-experience-library](https://github.com/libiwolve/dsh-experience-library)（MIT）——「经验验证固化层」的定位与三层检验思路。
+- [libiwolve/dsh-experience-library](https://github.com/libiwolve/dsh-experience-library)（MIT）——经验验证固化层的定位与三层检验思路。
 - [creativedswork/dsh-expmem](https://github.com/creativedswork/dsh-expmem)（MIT）——经验记录的信任状态 / 取代关系只追加不改写。
-- [pk14742952-AD/dsh-host-rsi](https://github.com/pk14742952-AD/dsh-host-rsi)（MIT）——L1/L2/L3 信号阶梯；v0.4.0 的用后反馈只取了其中一层。
+- [pk14742952-AD/dsh-host-rsi](https://github.com/pk14742952-AD/dsh-host-rsi)（MIT）——L1/L2/L3 信号阶梯；用后反馈只取其中一层。
 - [GIT121995/dsh-memory-gate](https://github.com/GIT121995/dsh-memory-gate)（MIT）——「检索到 ≠ 注入」与用后反馈修正置信度。
-- [superSizzzz/dsh-pitfalls](https://github.com/superSizzzz/dsh-pitfalls)（MIT）——负样本档案的结构与「宁可空手不给错答案」的阈值口径。
+- [superSizzzz/dsh-pitfalls](https://github.com/superSizzzz/dsh-pitfalls)（MIT）——负样本档案结构与「宁可空手不给错答案」的阈值口径。
 - [zilliztech/memsearch](https://github.com/zilliztech/memsearch)（MIT）——memory → skill 自进化路线的方向对照。
 - [EvoMap/evolver-dsh-plugin](https://github.com/EvoMap/evolver-dsh-plugin)（MIT）——按证据分级给策略打分。
 - [babushkai/jitrl-skill](https://github.com/babushkai/jitrl-skill)（MIT）——同一算法在 Claude Code 上的形态与「上下文注入近似 logit 调整」的说明。
-- [Phant0Meow/dsh-meow-memory](https://github.com/Phant0Meow/dsh-meow-memory)（MIT）——七层记忆 / lesson 层 / dream 调度思路。
+- [Phant0Meow/dsh-meow-memory](https://github.com/Phant0Meow/dsh-meow-memory)（MIT）——分层记忆 / lesson 层 / dream 调度思路。
 - [bugtakue/dsh-ronge-adaptive-skill-archive](https://github.com/bugtakue/dsh-ronge-adaptive-skill-archive)（MIT）——技能推荐 + 经验权重 + 探索配额的方向对照。
-- [omdsh-dev/dsh-mnemon](https://github.com/omdsh-dev/dsh-mnemon)（MIT）——本包对接的记忆空间宿主；页脚补丁作用于本机已装副本，不随包分发上游代码。
+- [omdsh-dev/dsh-mnemon](https://github.com/omdsh-dev/dsh-mnemon)（MIT）——本包对接的记忆空间宿主；页脚补丁作用于本机已装副本。
 - 分簇路由不引入 LLM 路由器的依据：**arXiv:2610.38796** §C.2。
-- **未采用**：[dsh-brainagent](https://github.com/stas130286-blip/dsh-brainagent) 为非商业许可，只读不抄（详见 NOTICES）。
+- **未采用**：[dsh-brainagent](https://github.com/stas130286-blip/dsh-brainagent) 为非商业许可，只读不抄。
 
 ## 边界
 
-- 只做**一个空间**：所有数据写同一个 `exp-lib.json`；多空间共用会混在一起。
-- 簇是**派生视图**，不落盘：`exp-lib.json` 结构不变（还是 `{version, types[], experiences[]}`），回滚只需 `routing: 'off'`（或删 `cluster.js`）。
-- 没有单条「改内容」入口（协议没有 update）：改类型用 `exp_type assign`，改内容 = 再记一次（就地更新或取代）。
-- `kernel.js` 与 `jitrl_memory.py` 保持逐字段对拍；**召回层 v2 在 `retrieval.js`**，只改「谁算邻居、相似度怎么算」，不需要动 Python 参考实现。分簇只改变「谁进邻居集」，不改 V̂ / Q̂ / Â 的数学。
-- 没有成败对照时，排序只能按证据强度，不能分辨「哪种打法更好」——这是数据问题，不是代码能绕过的；分簇也改善不了它（簇内 support 只会更少），提示层和 `exp_record` 的回执都会提醒记负样本。
-- `dataDir` 默认落在 `$DSH_HOME` 下；想放工作台内便于 Git 与备份，在记忆引擎里改一次即可，插件不强制位置。
+- 只做**一个空间**：所有数据写同一个 `exp-lib.json`。
+- 簇是派生视图，不落盘；回滚 `routing: 'off'` 即可。
+- 没有单条「改内容」入口：改类型用 `exp_type assign`，改内容 = 再记一次。
+- 没有成败对照时排序只能按证据强度——数据问题，代码绕不过；提示层与 `exp_record` 回执会提醒记负样本。
+- 反馈是自报的：它改的是排序依据，不是事实。
+- `dataDir` 默认在 `$DSH_HOME` 下，想放工作台内便于 Git 备份，在记忆引擎里改一次即可。
+
+（巩固机制的最小版见上「候选规则」；历史版本的逐条变更已移到 `归档/过程/exp-lib-README-版本史.md`。）

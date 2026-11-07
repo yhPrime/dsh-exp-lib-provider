@@ -9,13 +9,16 @@ import {
   FEEDBACK_ETA,
   applyFeedback,
   assignType,
+  buildInduction,
   createType,
   deleteType,
   findType,
   listTypes,
+  logUsage,
   mergeTypes,
   rankExperiences,
   readStore,
+  visibleExperiences,
   renameType,
   resolveToolDataDir,
   scoreOf,
@@ -37,6 +40,8 @@ function renderJson(_args, value) {
 export function buildTools(defineTool, config = {}) {
   // 跟随记忆插件里的 Provider 服务设置（用户改数据目录后工具自动跟随），读不到才退回插件配置。
   const dataDirOf = () => resolveToolDataDir(config)
+  // 用法日志（零 token）：只回答「召回到底有没有被用起来」；config.usageLog=false 可关。
+  const usageOptions = { enabled: config.usageLog !== false, maxBytes: config.usageLogMaxBytes }
 
   const record = defineTool({
     name: 'exp_record',
@@ -48,6 +53,12 @@ export function buildTools(defineTool, config = {}) {
       type: { type: 'string', description: '类型名（可选）。不填归「未分类」；填了新名字会按需新建类型（受上限与近似合并限制）。' },
       typeDescription: { type: 'string', description: '新建类型时的描述（≤120 字）：这个类型收什么、召回时怎么用。复用已有类型时忽略。' },
       note: { type: 'string', description: '关键步骤、为什么有效、踩了什么坑。' },
+      taskId: { type: 'string', description: '可选：多步任务的任务 id。同 taskId 的步骤会归到同一任务，统计按任务算一次。' },
+      kind: { type: 'string', enum: ['task', 'step'], description: '可选：这条是整条任务（默认）还是任务里的一步。' },
+      stepIndex: { type: 'number', description: 'kind=step 时的步骤序号（1 起）。' },
+      stepTotal: { type: 'number', description: '该任务共几步。' },
+      failedStep: { type: 'number', description: '整条记录时，失败发生在第几步（1 起）。' },
+      stepRewards: { type: 'array', description: '分步回报（数字数组）；整条记录时可用它代替单一 G。' },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     execute(args = {}) {
@@ -71,17 +82,34 @@ export function buildTools(defineTool, config = {}) {
         type: typeName,
         typeDescription: args.typeDescription,
         note: args.note,
+        taskId: args.taskId,
+        kind: args.kind,
+        stepIndex: args.stepIndex,
+        stepTotal: args.stepTotal,
+        failedStep: args.failedStep,
+        stepRewards: args.stepRewards,
       }, {
         mergeThreshold: config.mergeThreshold,
         replaceThreshold: config.replaceThreshold,
         maxTypes: config.maxTypes,
         newTypesPerDay: config.newTypesPerDay,
         typeSimilarity: config.typeSimilarity,
+        feedbackDecayDays: config.feedbackDecayDays,
       })
       writeStore(dataDir, store)
+      logUsage(dataDir, {
+        tool: 'exp_record',
+        op: result.action,
+        id: result.experience.id,
+        intent: result.experience.intent,
+        action: result.experience.action,
+        outcome: result.experience.outcome,
+        typeName: result.experience.typeName,
+        hits: result.experience.hits,
+      }, usageOptions)
       const typeInfo = result.type || {}
       const sanitized = result.sanitized || {}
-      const active = store.experiences.filter((item) => !item.deleted_at && !item.superseded_by)
+      const active = visibleExperiences(store)
       const negativeSamples = active.filter((item) => Number(item.G) < 0).length
       return {
         action: result.action,
@@ -100,8 +128,13 @@ export function buildTools(defineTool, config = {}) {
         typeCount: store.types.filter((type) => type.system !== true && type.id !== 'ty_other').length,
         typeLimit: Math.max(1, Math.trunc(Number(config.maxTypes) || 24)),
         supersededId: result.supersededId || null,
+        retired: Array.isArray(result.retired) ? result.retired : [],
         count: active.length,
         negativeSamples,
+        // outcome 与分步回报反号时明确提示：G 取最弱一步，统计会按 G 记失败（2026-11-07）。
+        signWarning: result.signMismatch === true
+          ? `outcome（${result.experience.outcome}）与分步回报反号：G=${result.experience.G} 取最弱一步，统计会按 G 记失败。`
+          : null,
         qualityHint: negativeSamples === 0 && active.length >= 4
           ? '库里目前没有失败/纠正样本：召回会标 mode=evidence（Â 不具区分度）。遇到返工、被纠正或失败，请用 corrected/failed 记一条，负样本才让排序有信息量。'
           : null,
@@ -131,7 +164,26 @@ export function buildTools(defineTool, config = {}) {
         if (type === null) throw new Error(`没有这个簇：${String(args.cluster)}（用 exp_type list 看现有类型）`)
         clusterId = type.id
       }
-      return rankExperiences(store, String(args.intent || ''), args.limit || 8, { routing, clusterId })
+      const result = rankExperiences(store, String(args.intent || ''), args.limit || 8, { routing, clusterId, consolidation: config.consolidation, consolidationMinSamples: config.consolidationMinSamples })
+      // 归纳提示（实验，2026-11-07）：同族样本够多时给一段原料让模型自己归纳；config.induction=false 可关。
+      if (config.induction !== false) {
+        const induction = buildInduction(result.candidates, { minSamples: config.inductionMinSamples })
+        if (induction !== null) result.induction = induction
+      }
+      logUsage(dataDir, {
+        tool: 'exp_recall',
+        intent: String(args.intent || ''),
+        candidates: result.candidates.length,
+        neighbors: result.neighbor_count,
+        hit: result.candidates.length > 0,
+        mode: result.mode,
+        route: result.route && result.route.fallback === false ? result.route.name : '(fallback)',
+        route_score: result.route ? result.route.score : null,
+        limit: Math.max(1, Math.trunc(Number(args.limit) || 8)),
+        ids: result.candidates.slice(0, 3).map((candidate) => ((candidate.evidence || [])[0] || {}).id).filter(Boolean),
+        induction: typeof result.induction === 'string',
+      }, usageOptions)
+      return result
     },
   })
 
@@ -148,9 +200,18 @@ export function buildTools(defineTool, config = {}) {
     execute(args = {}) {
       const dataDir = dataDirOf()
       const store = readStore(dataDir)
-      const result = applyFeedback(store, args.id, { result: args.result, intent: args.intent, note: args.note }, { eta: config.feedbackEta })
+      const result = applyFeedback(store, args.id, { result: args.result, intent: args.intent, note: args.note }, { eta: config.feedbackEta, decayDays: config.feedbackDecayDays })
       writeStore(dataDir, store)
-      const active = store.experiences.filter((item) => !item.deleted_at && !item.superseded_by)
+      logUsage(dataDir, {
+        tool: 'exp_feedback',
+        id: result.id,
+        result: result.result,
+        G_before: result.G_before,
+        G_after: result.G_after,
+      }, usageOptions)
+      const active = visibleExperiences(store)
+      // 提示里写实际用的 η：配置改过 feedbackEta 时不能还硬编码 0.35（2026-11-07 验收）。
+      const effectiveEta = Number.isFinite(Number(config.feedbackEta)) ? Number(config.feedbackEta) : FEEDBACK_ETA
       const covered = active.filter((item) => item.feedback !== null && typeof item.feedback === 'object'
         && (Number(item.feedback.helped) || 0) + (Number(item.feedback.hurt) || 0) + (Number(item.feedback.neutral) || 0) > 0).length
       return {
@@ -158,7 +219,7 @@ export function buildTools(defineTool, config = {}) {
         ...result,
         hint: result.result === 'neutral'
           ? 'neutral 只计数，G 不变（没有证据说明这条更有效或更差）。'
-          : `G ${result.G_before} → ${result.G_after}（EMA η=${FEEDBACK_ETA}）：下次召回按新回报排序；outcome 仍记的是首次结果。`,
+          : `G ${result.G_before} → ${result.G_after}（EMA η=${effectiveEta}）：下次召回按新回报排序；outcome 仍记的是首次结果。`,
         feedbackCovered: covered,
         count: active.length,
       }
@@ -200,13 +261,35 @@ export function buildTools(defineTool, config = {}) {
         throw new Error(`不支持的类型动作：${action}`)
       }
       writeStore(dataDir, store)
+      logUsage(dataDir, {
+        tool: 'exp_type',
+        op: action,
+        target: String(args.name || args.id || args.newName || ''),
+      }, usageOptions)
       result.typeCount = store.types.filter((type) => type.system !== true && type.id !== 'ty_other').length
       result.typeLimit = Math.max(1, Math.trunc(Number(config.maxTypes) || 24))
       return result
     },
   })
 
-  return [record, recall, feedback, typeTool]
+  // 失败调用也要留痕：否则「调用次数」的分母只含成功调用，使用率会被高估。
+  // 成功行由各工具自己写（带业务字段）；这里只兜异常。
+  const guarded = [record, recall, feedback, typeTool].map((tool) => ({
+    ...tool,
+    execute(args = {}) {
+      try {
+        return tool.execute(args)
+      } catch (error) {
+        logUsage(dataDirOf(), {
+          tool: tool.name,
+          ok: false,
+          error: String((error && error.message) || error).slice(0, 120),
+        }, usageOptions)
+        throw error
+      }
+    },
+  }))
+  return guarded
 }
 
 /** 供外部（如管理/调试）复用的回报推断。 */

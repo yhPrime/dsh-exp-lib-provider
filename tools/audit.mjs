@@ -15,12 +15,14 @@
  *  5. 固定意图集召回：过阈条数、top1、mode（衡量「库是不是真的召得回」）
  */
 import path from 'node:path'
+import fs from 'node:fs'
 
 import {
   DEGENERATE_ADV_SPREAD,
   rankExperiences,
   readStore,
   resolveToolDataDir,
+  storeFile,
   visibleExperiences,
 } from '../store.js'
 import { RECALL_MIN_SIMILARITY, similarityV2, stateOf } from '../retrieval.js'
@@ -42,6 +44,31 @@ export const AUDIT_INTENTS = [
 ]
 
 const RESIDUE_RE = /<\/?\s*note\s*>|<\s*parameter\b/i
+
+/** 迁移留痕：对比文件里的 G 与 readStore 迁移后的 G（只读，不落盘）。 */
+export function migrationReport(store, dataDir) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(storeFile(dataDir), 'utf8'))
+    const rawById = new Map((Array.isArray(raw.experiences) ? raw.experiences : []).map((item) => [item.id, item]))
+    let migrated = 0
+    let maxDelta = 0
+    const examples = []
+    for (const row of store.experiences) {
+      const before = rawById.get(row.id)
+      if (before === undefined) continue
+      const oldG = Number(before.G)
+      const newG = Number(row.G)
+      if (!Number.isFinite(oldG) || !Number.isFinite(newG) || Math.abs(oldG - newG) < 1e-9) continue
+      migrated += 1
+      const delta = Math.abs(oldG - newG)
+      if (delta > maxDelta) maxDelta = delta
+      if (examples.length < 3) examples.push(`${String(row.id).slice(0, 8)} ${oldG.toFixed(2)}→${newG.toFixed(2)}`)
+    }
+    return { available: true, migrated, maxDelta, examples }
+  } catch {
+    return { available: false, migrated: 0, maxDelta: 0, examples: [] }
+  }
+}
 
 function main() {
   const dataDir = path.resolve(process.argv[2] || resolveToolDataDir({}))
@@ -93,7 +120,15 @@ function main() {
   const sumFeedback = (key) => withFeedback.reduce((total, item) => total + (Number(item.feedback[key]) || 0), 0)
   const feedbackRewritten = active.filter((item) => item.GSource === 'feedback').length
   console.log(`  用后反馈：${withFeedback.length} 条｜helped ${sumFeedback('helped')}｜hurt ${sumFeedback('hurt')}｜neutral ${sumFeedback('neutral')}｜G 被反馈改写过 ${feedbackRewritten}`)
-  if (active.length >= 4 && negatives === 0) warns.push('没有失败/纠正样本：召回会退化到 mode=evidence（Â 不具区分度）')
+  // 退休 / 生命周期：退休是「做法已被成功绕过」的软隐，不是删除；审计里要能看见。
+  const retired = store.experiences.filter((item) => item.retired_at && !item.deleted_at).length
+  const revived = store.experiences.filter((item) => Array.isArray(item.history) && item.history.some((event) => event.type === 'revived')).length
+  console.log(`  生命周期：退休 ${retired}｜复活过 ${revived}｜历史中位 ${store.experiences.length ? Math.round(store.experiences.reduce((total, item) => total + (Array.isArray(item.history) ? item.history.length : 0), 0) / store.experiences.length) : 0} 条`)
+
+  const migration = migrationReport(store, dataDir)
+  if (migration.available === false) console.log('  迁移留痕：无文件可比（首跑）')
+  else if (migration.migrated > 0) console.log(`  迁移留痕：${migration.migrated} 行 G 被读时重算（最大 Δ${migration.maxDelta.toFixed(2)}）｜${migration.examples.join('；')}`)
+  else console.log('  迁移留痕：无（文件与读后一致）')
 
   /* ---- 3. 对照覆盖 ---- */
   let contrastPairs = 0
@@ -151,4 +186,4 @@ function main() {
   console.log('结论：无 FAIL。')
 }
 
-main()
+if (process.argv[1] && process.argv[1].endsWith('audit.mjs')) main()
