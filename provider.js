@@ -9,6 +9,8 @@
  * 所以这里所有方法都写成 async，别再图省事返回裸对象。
  */
 
+import fs from 'node:fs'
+
 import {
   SPACE_DESCRIPTION,
   SPACE_NAME,
@@ -24,6 +26,9 @@ import {
   toInsight,
   writeStore,
 } from './store.js'
+
+/** 版本号只从 package.json 读一处，别在代码里另写一个（2026-11-07 修：manifest 曾硬编码 0.2.3）。 */
+const PACKAGE_VERSION = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
 
 export const PROVIDER_ID = 'exp-lib'
 export const PACKAGE_NAME = 'dsh-exp-lib-provider'
@@ -54,7 +59,7 @@ export function buildProvider(sdk, config = {}) {
       kind: 'provider',
       typeId: PROVIDER_ID,
       packageName: PACKAGE_NAME,
-      version: '0.2.3',
+      version: PACKAGE_VERSION,
       label: SPACE_NAME,
       summary: 'JitRL 经验记忆：记录做法与结果，按优势召回。',
       origin: 'third-party',

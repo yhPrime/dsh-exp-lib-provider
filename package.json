@@ -1,6 +1,6 @@
 {
   "name": "dsh-exp-lib-provider",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "经验库的记忆空间 Provider（后端），同时作为 DSH 插件注册 exp_recall / exp_record / exp_feedback / exp_type 工具。",
   "type": "module",
   "main": "index.js",
@@ -23,13 +23,14 @@
     "cluster.js",
     "tools/audit.mjs",
     "tools/eval-routing.mjs",
+    "tools/fix-residue.mjs",
     "tools/patch-memory-spaces-footer.mjs",
     "cordis.patch.yml",
     "README.md",
     "THIRD-PARTY-NOTICES.md"
   ],
   "scripts": {
-    "test": "node tests/kernel.test.mjs && node tests/recall.test.mjs && node tests/store.test.mjs && node tests/cluster.test.mjs && node tests/feedback.test.mjs && node tests/provider.test.mjs && node tests/tools.test.mjs && node tests/plugin.test.mjs && node tests/type-tool.test.mjs && node tests/patch-memory-spaces-footer.test.mjs",
+    "test": "node tests/kernel.test.mjs && node tests/recall.test.mjs && node tests/store.test.mjs && node tests/cluster.test.mjs && node tests/feedback.test.mjs && node tests/provider.test.mjs && node tests/tools.test.mjs && node tests/plugin.test.mjs && node tests/type-tool.test.mjs && node tests/fix-residue.test.mjs && node tests/patch-memory-spaces-footer.test.mjs",
     "audit": "node tools/audit.mjs",
     "eval:routing": "node tools/eval-routing.mjs"
   },
@@ -37,6 +38,9 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "engines": {
+    "node": ">=22"
   },
   "peerDependencies": {
     "dsh-mnemon-source-memory-spaces": "^0.5.0",

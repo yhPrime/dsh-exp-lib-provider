@@ -4,8 +4,9 @@
  * JS mirror of the Python reference core (`经验库/exp-lib/scripts/jitrl_memory.py`).
  * Pure functions: no fs, no state, no imports from the plugin host.
  *
- * Parity: `tests/tools/gen-golden.py` exports fixed cases from Python; `tests/jitrl.test.mjs`
- * compares this module against them. Python rounds its public numbers to 4 decimals, so the
+ * Parity: the Python reference core `经验库/exp-lib/scripts/jitrl_memory.py` exports fixed cases into
+ * `tests/fixtures/golden-advantages.json`; `tests/kernel.test.mjs` compares this module against them.
+ * Python rounds its public numbers to 4 decimals, so the
  * comparison tolerance is 2e-4 — tight enough to catch a wrong formula, loose enough to
  * survive banker's rounding.
  *

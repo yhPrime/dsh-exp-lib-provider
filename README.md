@@ -19,7 +19,7 @@
 
 ```powershell
 # 1) 装进目标 profile（tgz 文件，或 git 仓库地址）
-dsh plugin --profile <profile> add ./dsh-exp-lib-provider-0.4.1.tgz
+dsh plugin --profile <profile> add ./dist/dsh-exp-lib-provider-<版本>.tgz   # <版本> 用 npm pack 产出的最新号
 ```
 
 > 为什么用 tarball 而不是目录：`dsh plugin add <目录>` 会做 pnpm link，运行时按真实路径解析依赖，宿主提供的 `dsh-mnemon-source-memory-spaces` 会找不到。tarball 装的是包副本，依赖从 profile 的 `node_modules` 解析。**改完代码要重新 pack + add 才会生效。**
@@ -173,12 +173,13 @@ node tools/patch-memory-spaces-footer.mjs --profile <名>   # 指定 profile
 ## 测试与体检
 
 ```powershell
-npm test                          # 117 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
+npm test                          # 124 项断言（在开发工作区跑，GitHub 发布树不含 tests/）
 node tools/audit.mjs <dataDir>    # 只读体检，有问题退出码 1
 node tools/eval-routing.mjs       # 路由标定集评估：hit@1 / 误路由 / 回退正确率
+node tools/fix-residue.mjs [--write]  # 残渣修复：默认 dry-run；--write 先备份再落盘
 ```
 
-**117 项全绿**：kernel 19 / recall 11 / store 17 / cluster 21 / feedback 11 / provider 13 / tools 7 / plugin 5 / type-tool 7 / 页脚补丁 6。
+**124 项全绿**：kernel 19 / recall 12 / store 17 / cluster 21 / feedback 11 / provider 14 / tools 7 / plugin 5 / type-tool 7 / 残渣修复 5 / 页脚补丁 6。
 
 - `tests/kernel.test.mjs` 是**与 Python 参考实现的逐字段对拍**（fixture 由 `jitrl_memory.py` 生成）。改 kernel 的论文数学要同步改 Python 并重生成 fixture；
 - `tests/recall.test.mjs` 是 2026-10-29 加的回归面：自然短意图召回、artifact 别名归一、噪声不假召回、degenerate 降级、成败对照不被取代、写入清洗、`exp_type assign`、回报口径一致；
